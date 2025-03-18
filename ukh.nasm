@@ -33,18 +33,20 @@ LOADFLAG_READ:
 
 %macro halt 0
 		cli
-		hlt
-%%back:		jmp short %%back
+  %%back:	hlt
+		jmp short %%back
 %endm
 
 boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
-.start:	jmp short .code
+.start:		jmp short .code
 		times 0x20-($-.start) nop
 .cl_magic:	times 2 nop  ; The Linux bootloader will set this to: dw 0xa33f
 .cl_offset:	times 2 nop  ; The Linux bootloader will set this to the offset of the kernel command line.
 
 .code:		mov ax, 0xe00+'b'  ; This code will be ignored by `qemu-system-i386 -kernel ...'.
 		xor bx, bx
+		int 0x10
+		mov al, 's'
 		int 0x10
 		halt
 
@@ -64,7 +66,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		assert_fofs 0x1fa
 .vid_mode:	dw 0  ; (read, modify obligatory) Video mode control.
 		assert_fofs 0x1fc
-.root_dev:	dw 0  ; (read, modify optional) Default root device number.
+.root_dev:	dw 0  ; (read, modify optional) Default root device number. Neither GRUB 1 nor QEMU 2.11.1 set it. 
 		assert_fofs 0x1fe
 .boot_flag:	dw BOOT_SIGNATURE  ; (read) 0xaa55 magic number.
 		assert_fofs 0x200
@@ -79,7 +81,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x208
 .realmode_swtch: dd 0  ; (read, modify optional) Bootloader hook.
 		assert_fofs 0x20c
-.start_sys_seg: dw 0x1000  ; (read) The load-low segment (0x1000), i.e. linear address >> 4 (obsolete). Ignored by both GRUB 1 and QEMU 2.11.1.
+.start_sys_seg: dw 0x1000  ; (read) The load-low segment (0x1000), i.e. linear address >> 4 (obsolete). Ignored by both GRUB 1 0.97 and QEMU 2.11.1. In Linux kernel mode, they don't set root= either, and they don't pass the boot drive (boot_drive, saved_drive, current_drive, is saved_drive the result of `rootnoverify'?) number anywhere. Also GRUB 1 0.97 passes the boot drive in DL in `chainloader' (stage1) mode only.
 		assert_fofs 0x20e
 .kernel_version: dw .kernel_version_string-setup_sectors  ; (read) Pointer to kernel version string or 0 to indicate no version. Relative to .setup_sectors.
 		assert_fofs 0x210
