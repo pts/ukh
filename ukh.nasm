@@ -69,6 +69,7 @@ OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 
 KERNELSEG equ 0x1000
 INITSEG equ 0x9000  ; We assume that 5*0x200 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
+BOOT_ENTRY_ADDR equ 0x7c00
 
 LOADFLAG_READ:
 .HIGH: equ 1 << 0
@@ -79,20 +80,39 @@ LOADFLAG_READ:
 		jmp short %%back
 %endm
 
+; With the Linux boot protocols, the bootloader loads the first 5*0x200
+; bytes (boot_sector and setup_sectors) to INITSEG<<4 (== 0x90000), the rest
+; (code32) to KERNELSEG<<4 (== 0x10000) and jumps to 0x9020:0
+; (setup_sectors) in real mode.
+;
+; With the bs boot protocol, the bootloader loads everything to
+; BOOT_ENTRY_ADDR (0x7c00), and jumps to 0:BOOT_ENTRY_ADDR.
 boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
 .start:		jmp short .code
 .cl_magic equ .start+0x20  ; The Linux bootloader will set this to: dw 0xa33f
 .cl_offset equ .start+0x22  ; The Linux bootloader will set this to (dw) the offset of the kernel command line.
-; !! .align_signagure: dw 'MK'  ; Align to a multiple of 4 bytes. Also a signature for our kernel type.
+; !! .align_signature: dw 'MK'  ; Align to a multiple of 4 bytes. Also a signature for our kernel type.
 
-.code:		mov ax, 0xe00+'b'  ; This code will be ignored by `qemu-system-i386 -kernel ...'.
-		xor bx, bx
+.code:		mov ax, 0xe00+'?'  ; Set up error message.
+		xor bx, bx  ; Set up error message.
+		mov cx, cs
+		test cx, cx
+		jnz short .not_bs_protocol
+		call .here
+.here:		pop cx  ; DX := actual offset of .here.
+		cmp cx, BOOT_ENTRY_ADDR+.here-.start
+		je short .bs_protocol
+.not_bs_protocol:
+		int 0x10
+.halt:		halt
+.bs_protocol:
+		mov al, 'b'
 		int 0x10
 		mov al, 's'
 		int 0x10
-		mov al, dl  ; Good: 0x80 by both GRUB4DOS
-		int 0x10
-		halt
+		mov al, dl  ; Good: 0x80 by both SYSLINUX 4.07 boot and GRUB4DOS chainloader.
+		jmp short .not_bs_protocol
+		; !! Copy code32.end-code32 bytes from 0x7c00+5*0x200 ==
 
 		times 0x1f1-($-.start) db 0
 .linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sectors.linux_boot_header.end.
