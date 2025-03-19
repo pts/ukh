@@ -12,21 +12,36 @@
 ;
 ; The Universal Kernel Header emitted by this file supports multiple load protocols:
 ;
-; * Linux kernel old (<2.00) protocol: Load first 4 sectors (4*0x200 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230, including BOOT_SIGNATURE.
-; * Linux kernel protocol version 2.01: This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE.
-; * !! bs (GRUB chainloader, SYSLINUX boot): load entire kernel file (not only the first sector) to 0x7c00, set DL to the BIOS drive number, jump to 0:0x7c00. The BOOT_SIGNATURE in file offset range 0x1fe...0x200 is needed by GRUB 1 0.97 `chainloader`, but not `chainloader --force`.
+; * Linux kernel old (<2.00) protocol: Load first 4 sectors (4*0x200 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line.
+; * Linux kernel protocol version 2.01: This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line.
+; * !! bs (GRUB chainloader, SYSLINUX boot): load entire kernel file (not only the first sector) to 0x7c00, set DL to the BIOS drive number, jump to 0:0x7c00. The BOOT_SIGNATURE in file offset range 0x1fe...0x200 is needed by GRUB 1 0.97 `chainloader`, but not `chainloader --force`. It can't receive a command line.
 ; * !! FreeDOS and SvarDOS kernel.sys: load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number.
 ; * !! EDR-DOS drbio.sys: load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0.
 ; * !! NTLDR: load at least first 0x24 bytes (.hidden_sector_count or the entire 0x24 byte substring, see https://retrocomputing.stackexchange.com/a/31399) of the boot partition (boot sector) to 0x7c00, load kernel file to 0x20000, set DL to the BIOS drive number, jump to 0x2000:0. No header fields used.
-; * !! Multiboot v1: It switches immediately to i386 32-bit protected mode. That could work if we set up the header. No need to switch back to real mode. See also https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
+; * Multiboot v1: It switches immediately to i386 32-bit protected mode. That could work if we set up the header. No need to switch back to real mode. It can receive both command line and BIOS drive number. SYSLINUX supports it only with mboot.c32. See also https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 ;   * GRUB 1 0.97 detects Multiboot v1 signature first in the first 0x8000 bytes, overriding any other type of detection. Multiboot can also be forced with `kernel --type=multiboot`.
-;   * !! Test with GRUB without the Multiboot v1 header.
+;   * Tested with GRUB4DOS 0.4.4 with and without the Multiboot v1 header. Also tested With SYSLINUX 4.07 linux and boot. !! Test with GRUB 1 0.97.
 ;
 ; This Universal Kernel Header doesn't support these load protocols yet:
 ;
 ; * NTLDR from Windows NT boot.ini (`C:\NTLDR="label"`): It loads only the first 0x10 (== 16) sectors of the *ntldr* file, otherwise the same as the supported NTLDR above.
 ; * MS-DOS v6: MS-DOS 3.30--6.22, IBM PC DOS 3.30--6.x. IBM PC DOS 7.0--7.1 is almost identical. This loads only the first 3 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0. It passes some info in registers and memory.
 ; * MS-DOS v7: MS-DOS 7.0--7.1--8.0, Windows 95--98--ME. This loads only the first 4 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0x200. It passes some info in registers and memory.
+;
+; SYSLINUX 4.07 supports these file formats:
+;
+; * ```
+;    kernel   | VK_KERNEL  | 0 | choose by extension |
+;    linux    | VK_LINUX   | 1 | Linux kernel image  | any other than .com, .cbt, .c32, .img, .bss, .bin, .bs, .0
+;    boot     | VK_BOOT    | 2 | Boot sector         | .bin, .bs, .0
+;    bss      | VK_BSS     | 3 | BSS boot sector     | .bss
+;    pxe      | VK_PXE     | 4 | PXE NBP             |
+;    fdimage  | VK_FDIMAGE | 5 | Floppy disk image   | .img, forced error by SYSLINUX 4.07 (is_disk_image)
+;    comboot  | VK_COMBOOT | 6 | COMBOOT image       | .com, .cbt
+;    com32    | VK_COM32   | 7 | COM32 image         | .c32
+;    config   | VK_CONFIG  | 8 | configuration file  |
+;    ```
+;  * *bss* is like *boot*, but after loading to kernel file, bytes 0xb..0x25 of the kernel file are ignored (good enough for FAT12 and FAT16, too short for FAT32), and the bytes from the boot sector are used instead of them.
 ;
 
 %macro assert_fofs 1
@@ -49,7 +64,8 @@ MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
 OUR_MULTIBOOT_FLAGS equ MULTIBOOT_FLAG_AOUT_KLUDGE
 OUR_MULTIBOOT_LOAD_ADDR equ 0x100000
-OUR_MULTIBOOT_COPY_CODE32_SIZE equ 20
+OUR_MULTIBOOT_COPY_CODE32_SIZE equ 0x14
+OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 
 KERNELSEG equ 0x1000
 INITSEG equ 0x9000  ; We assume that 5*0x200 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
@@ -63,45 +79,18 @@ LOADFLAG_READ:
 		jmp short %%back
 %endm
 
-%macro emit_multiboot_copy_code32 0
-  multiboot_copy_code32:  ; Used by multiboot only.
-  cpu 386  ; !! Do it with `db' instead, avoiding the mode change.
-  bits 32
-		mov esi, OUR_MULTIBOOT_LOAD_ADDR+code32-multiboot_copy_code32
-		mov edi, KERNELSEG<<4
-		push edi
-		mov ecx, (code32.end-code32+3)>>2
-		rep movsd
-		ret  ; Jump to KERNELSEG<<4.
-		nop  ; Align to multiple of 4.
-  .end:
-  bits 16
-  cpu 8086
-%endm
-
 boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
 .start:		jmp short .code
 .cl_magic equ .start+0x20  ; The Linux bootloader will set this to: dw 0xa33f
 .cl_offset equ .start+0x22  ; The Linux bootloader will set this to (dw) the offset of the kernel command line.
-.multiboot_align_signagure: dw 'MK'  ; Align the Multiboot v1 header to a multiple of 4 bytes. Also a signature for our kernel type.
-.multiboot_align_check: times -(($-.start)&3) nop  ; Check alignment of the .multiboot_v1 below. GRUN 1 0.97
-.multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
-.multiboot.magic: dd MULTIBOOT_MAGIC
-.multiboot.flags: dd OUR_MULTIBOOT_FLAGS
-.multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
-.multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(multiboot_copy_code32-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. !!! ERR_EXEC_FORMAT if .multiboot comes before load_addr.
-.multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for KERNELSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
-.multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_copy_code32
-.multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_copy_code32  ; No specific .bss to be cleared by the bootloader.
-.multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR
-.multiboot_size_check: assert_at .multiboot+0x20  ; !!! Try Multiboot v1.
+; !! .align_signagure: dw 'MK'  ; Align to a multiple of 4 bytes. Also a signature for our kernel type.
 
 .code:		mov ax, 0xe00+'b'  ; This code will be ignored by `qemu-system-i386 -kernel ...'.
 		xor bx, bx
 		int 0x10
 		mov al, 's'
 		int 0x10
-		mov al, dl
+		mov al, dl  ; Good: 0x80 by both GRUB4DOS
 		int 0x10
 		halt
 
@@ -182,7 +171,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 .ck:		cld
 
 		; now we want to move to protected mode ...
-		mov al, 0x80  ; disable NMI for the bootup sequence
+		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed?
 		out 0x70, al
 
 		; The system will move itself to its rightful place.
@@ -191,10 +180,9 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov ax, INITSEG
 		mov ds, ax
 		mov es, ax
-		mov ss, ax  ; reset the stack to INITSEG:0x4000-12.
-		mov sp, setup_stack+0x200-boot_sector
-		push cs
-		pop ds
+		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
+		mov esp, setup_stack+0x200-boot_sector  ; 0x200 bytes of stack. We set ESP because we'd need all 32 bits of it in protected mode.
+		; !! Can we do without a stack here (ESP == 0) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
 		lidt [idt_48-boot_sector]  ; load idt with 0,0
 		lgdt [gdt_48-boot_sector]  ; load gdt with whatever appropriate
 
@@ -294,13 +282,43 @@ idt_48:		dw 0  ; idt limit=0
 gdt_48:		dw gdt.end-gdt-1
 		dd (INITSEG<<4)+gdt-boot_sector  ; gdt base = 0X9xxxx; !! Relocate this if the setup code above works at any segment other than INITSEG.
 
-		times 4*0x200-($-setup_sectors)-OUR_MULTIBOOT_COPY_CODE32_SIZE db 0  ; Omit these bytes, do two `rep movsd's instead.
-		assert_fofs 0xa00-OUR_MULTIBOOT_COPY_CODE32_SIZE
-		emit_multiboot_copy_code32  ; Must be at the end of the last setup sector, just before code32.
+%ifdef MULTIBOOT
+		times 4*0x200-($-setup_sectors)-OUR_MULTIBOOT_COPY_CODE32_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
+		assert_fofs 0xa00-OUR_MULTIBOOT_COPY_CODE32_SIZE-OUR_MULTIBOOT_HEADER_SIZE
+multiboot:
+  .multiboot_copy_code32:  ; Used by multiboot only.
+		; If you change code here, update MULTIBOOT_COPY_CODE32_SIZE accordingly.
+  cpu 386  ; !! Do it with `db' instead, avoiding the mode change.
+  bits 32
+		mov esi, OUR_MULTIBOOT_LOAD_ADDR+OUR_MULTIBOOT_COPY_CODE32_SIZE+OUR_MULTIBOOT_HEADER_SIZE  ; Linear address of code32.
+		mov edi, KERNELSEG<<4
+		push edi
+		mov ecx, (code32.end-code32+3)>>2
+		rep movsd
+		ret  ; Jump to KERNELSEG<<4.
+		nop  ; Align to multiple of 4.
+  bits 16
+  cpu 8086
+		assert_fofs 0xa00-OUR_MULTIBOOT_HEADER_SIZE
+  .multiboot_align_check: times -(($-boot_sector.start)&3) nop  ; Check alignment of the .multiboot_v1 below. GRUN 1 0.97
+  .multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
+  .multiboot.magic: dd MULTIBOOT_MAGIC
+  .multiboot.flags: dd OUR_MULTIBOOT_FLAGS
+  .multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
+  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(.multiboot_copy_code32-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot came before load_addr.
+  .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for KERNELSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
+  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-.multiboot_copy_code32
+  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-.multiboot_copy_code32  ; No specific .bss to be cleared by the bootloader.
+  .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR
+  .multiboot_size_check: assert_at .multiboot+0x20  ; !!! Try Multiboot v1.
+%else
+		times 4*0x200-($-setup_sectors) db 0  ; !! Omit (most of) these bytes, do two `rep movsd's instead.
+%endif
 		assert_fofs 0xa00
 setup_stack:  ; 0x200 bytes.
 
 code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
+		; It starts with cld, cli.
 		incbin MEMTEST86PLUS5_BIN, 0xa00
 .end:
 
@@ -358,13 +376,10 @@ code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything.
 .sector2:	db '2'
 		times 0x200-($-.sector2) db 0
 .sector3:	db '3'
-		times 0x200-OUR_MULTIBOOT_COPY_CODE32_SIZE-($-.sector3) db 0
-		assert_fofs 0xa00-OUR_MULTIBOOT_COPY_CODE32_SIZE
-		emit_multiboot_copy_code32  ; Must be at the end of the last setup sector, just before code32.
+		times 0x200-($-.sector3) db 0
 		assert_fofs 0xa00
 
 code32:		; (Should be) 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
-		assert_at multiboot_copy_code32.end
 		db 'T'
 .end:
 %endif
