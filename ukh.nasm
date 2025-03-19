@@ -7,19 +7,36 @@
 ;
 ; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
 ;
-; This header is compatible with the old a new (>=2.00) boot protocol of the
-; Linux kernel, and indicates version 2.01 to non-old-protocol Linux bootloaders.
-; Linux kernel: https://docs.kernel.org/arch/x86/boot.html
+; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kerenel old protocol.
+; !! Compress the 32-bit payload (better than liigboot 16-bit UPX memtest.bs). `upxbc --flat32` compression is better than `upcbc --flat16`, but *flat32* fails to boot. !! Why? Is it because of ESP? !! Currently memtest86+.lzma.kernel.bin doesn't work.
 ;
-; !! Also add compatibility with multiboot 1, switch back to real mode. (Which kernels support multiboot 1, and which bootloaders support it in addition to GRUB?)
-;    See also ENTRY(prot_to_real) in grub-0l97_asm.S for switching from 32-bit protected mode to real mode.
+; The Universal Kernel Header emitted by this file supports multiple load protocols:
+;
+; * Linux kernel old (<2.00) protocol: Load first 4 sectors (4*0x200 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230, including BOOT_SIGNATURE.
+; * Linux kernel protocol version 2.01: This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE.
+; * !! bs (GRUB chainloader, SYSLINUX boot): load entire kernel file (not only the first sector) to 0x7c00, set DL to the BIOS drive number, jump to 0:0x7c00. The BOOT_SIGNATURE in file offset range 0x1fe...0x200 is needed by GRUB 1 0.97 `chainloader`, but not `chainloader --force`.
+; * !! FreeDOS and SvarDOS kernel.sys: load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number.
+; * !! EDR-DOS drbio.sys: load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0.
+; * !! NTLDR: load at least first 0x24 bytes (.hidden_sector_count or the entire 0x24 byte substring, see https://retrocomputing.stackexchange.com/a/31399) of the boot partition (boot sector) to 0x7c00, load kernel file to 0x20000, set DL to the BIOS drive number, jump to 0x2000:0. No header fields used.
+; * !! Multiboot v1: It switches immediately to i386 32-bit protected mode. That could work if we set up the header. No need to switch back to real mode. See also https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
+;   * GRUB 1 0.97 detects Multiboot v1 signature first in the first 0x8000 bytes, overriding any other type of detection. Multiboot can also be forced with `kernel --type=multiboot`.
+;   * !! Test with GRUB without the Multiboot v1 header.
+;
+; This Universal Kernel Header doesn't support these load protocols yet:
+;
+; * NTLDR from Windows NT boot.ini (`C:\NTLDR="label"`): It loads only the first 0x10 (== 16) sectors of the *ntldr* file, otherwise the same as the supported NTLDR above.
+; * MS-DOS v6: MS-DOS 3.30--6.22, IBM PC DOS 3.30--6.x. IBM PC DOS 7.0--7.1 is almost identical. This loads only the first 3 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0. It passes some info in registers and memory.
+; * MS-DOS v7: MS-DOS 7.0--7.1--8.0, Windows 95--98--ME. This loads only the first 4 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0x200. It passes some info in registers and memory.
 ;
 
 %macro assert_fofs 1
   times +(%1)-($-$$) times 0 nop
   times -(%1)+($-$$) times 0 nop
 %endm
-
+%macro assert_at 1
+  times +(%1)-$ times 0 nop
+  times -(%1)+$ times 0 nop
+%endm
 
 bits 16
 cpu 8086
@@ -27,6 +44,15 @@ cpu 8086
 BOOT_SIGNATURE equ 0xaa55
 
 LINUX_CL_MAGIC equ 0xa33f
+
+MULTIBOOT_MAGIC equ 0x1badb002
+MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
+OUR_MULTIBOOT_FLAGS equ MULTIBOOT_FLAG_AOUT_KLUDGE
+OUR_MULTIBOOT_LOAD_ADDR equ 0x100000
+OUR_MULTIBOOT_COPY_CODE32_SIZE equ 20
+
+KERNELSEG equ 0x1000
+INITSEG equ 0x9000  ; We assume that 5*0x200 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
 
 LOADFLAG_READ:
 .HIGH: equ 1 << 0
@@ -37,16 +63,45 @@ LOADFLAG_READ:
 		jmp short %%back
 %endm
 
+%macro emit_multiboot_copy_code32 0
+  multiboot_copy_code32:  ; Used by multiboot only.
+  cpu 386  ; !! Do it with `db' instead, avoiding the mode change.
+  bits 32
+		mov esi, OUR_MULTIBOOT_LOAD_ADDR+code32-multiboot_copy_code32
+		mov edi, KERNELSEG<<4
+		push edi
+		mov ecx, (code32.end-code32+3)>>2
+		rep movsd
+		ret  ; Jump to KERNELSEG<<4.
+		nop  ; Align to multiple of 4.
+  .end:
+  bits 16
+  cpu 8086
+%endm
+
 boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
 .start:		jmp short .code
-		times 0x20-($-.start) nop
-.cl_magic:	times 2 nop  ; The Linux bootloader will set this to: dw 0xa33f
-.cl_offset:	times 2 nop  ; The Linux bootloader will set this to the offset of the kernel command line.
+.cl_magic equ .start+0x20  ; The Linux bootloader will set this to: dw 0xa33f
+.cl_offset equ .start+0x22  ; The Linux bootloader will set this to (dw) the offset of the kernel command line.
+.multiboot_align_signagure: dw 'MK'  ; Align the Multiboot v1 header to a multiple of 4 bytes. Also a signature for our kernel type.
+.multiboot_align_check: times -(($-.start)&3) nop  ; Check alignment of the .multiboot_v1 below. GRUN 1 0.97
+.multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
+.multiboot.magic: dd MULTIBOOT_MAGIC
+.multiboot.flags: dd OUR_MULTIBOOT_FLAGS
+.multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
+.multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(multiboot_copy_code32-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. !!! ERR_EXEC_FORMAT if .multiboot comes before load_addr.
+.multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for KERNELSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
+.multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_copy_code32
+.multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_copy_code32  ; No specific .bss to be cleared by the bootloader.
+.multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR
+.multiboot_size_check: assert_at .multiboot+0x20  ; !!! Try Multiboot v1.
 
 .code:		mov ax, 0xe00+'b'  ; This code will be ignored by `qemu-system-i386 -kernel ...'.
 		xor bx, bx
 		int 0x10
 		mov al, 's'
+		int 0x10
+		mov al, dl
 		int 0x10
 		halt
 
@@ -57,7 +112,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		assert_fofs 0x1f2
 .root_flags:	dw 0  ; (read, modify optional) If set, the root is mounted readonly.
 		assert_fofs 0x1f4
-.syssize_low:	dw (text.end-text+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but boot protocol <=2.01 supports zImage only, with its maximum size of 0x9000-0x200*(1+.setup_sects) bytes.
+.syssize_low:	dw (code32.end-code32+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but boot protocol <=2.01 supports zImage only, with its maximum size of 0x9000-0x200*(1+.setup_sects) bytes.
 		assert_fofs 0x1f6
 .swap_dev:
 .syssize_high:	dw 0  ; (read) The high word size of the 32-bit code in 16-byte paras. For boot protocol prior to 2.04, the upper two bytes of the syssize field are unusable, which means the size of a bzImage kernel cannot be determined.
@@ -81,13 +136,13 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x208
 .realmode_swtch: dd 0  ; (read, modify optional) Bootloader hook.
 		assert_fofs 0x20c
-.start_sys_seg: dw 0x1000  ; (read) The load-low segment (0x1000), i.e. linear address >> 4 (obsolete). Ignored by both GRUB 1 0.97 and QEMU 2.11.1. In Linux kernel mode, they don't set root= either, and they don't pass the boot drive (boot_drive, saved_drive, current_drive, is saved_drive the result of `rootnoverify'?) number anywhere. Also GRUB 1 0.97 passes the boot drive in DL in `chainloader' (stage1) mode only.
+.start_sys_seg: dw KERNELSEG  ; (read) The load-low segment (0x1000), i.e. linear address >> 4 (obsolete). Ignored by both GRUB 1 0.97 and QEMU 2.11.1. In Linux kernel mode, they don't set root= either, and they don't pass the boot drive (boot_drive, saved_drive, current_drive, is saved_drive the result of `rootnoverify'?) number anywhere. Also GRUB 1 0.97 passes the boot drive in DL in `chainloader' (stage1) mode only.
 		assert_fofs 0x20e
 .kernel_version: dw .kernel_version_string-setup_sectors  ; (read) Pointer to kernel version string or 0 to indicate no version. Relative to .setup_sectors.
 		assert_fofs 0x210
 .type_of_loader: db 0  ; (write obligatory) Bootloader identifier.
 		assert_fofs 0x211
-.loadflags:	db 0  ; Boot protocol option flags. Not specifying LOADFLAG.HIGH, so the the protected-mode code is will be loaded at 0x10000 (.start_sys_seg << 4).
+.loadflags:	db 0  ; Boot protocol option flags. Not specifying LOADFLAG.HIGH, so the the protected-mode code is will be loaded at 0x10000 (== .start_sys_seg<<4 == KERNELSEG<<4).
 		assert_fofs 0x212
 .setup_move_size: dw 0  ; (modify obligatory) Move to high memory size (used with hooks). When using protocol 2.00 or 2.01, if the real mode kernel is not loaded at 0x90000, it gets moved there later in the loading sequence. Fill in this field if you want additional data (such as the kernel command line) moved in addition to the real-mode kernel itself.
 		assert_fofs 0x214
@@ -104,15 +159,18 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 .linux_boot_header.end:
 
 %ifdef MEMTEST86PLUS5  ; Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.
+  %ifndef MEMTEST86PLUS5_BIN
+    %define MEMTEST86PLUS5_BIN  'memtest86+-5.01-dist.bin'  ; Works. ~150 KiB.
+    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.01.bin'  ; Works. Ubuntu. ~182 KiB. Larger probably because of different C compiler or flags.
+    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.31b-dist.bin'  ; Works.
+  %endif
 
-cpu 386
+  cpu 386
 
-base: equ setup_sectors
+  base: equ setup_sectors
 
-KERNELSEG equ 0x1000
-INITSEG equ 0x9000  ; We assume that 5*0x200 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
-KERNEL_CS equ 0x10
-KERNEL_DS equ 0x18
+  KERNEL_CS equ 0x10
+  KERNEL_DS equ 0x18
 
 .kernel_version_string: db 'memtest86+-5', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
 %if $-.start<0x30
@@ -234,16 +292,16 @@ idt_48:		dw 0  ; idt limit=0
 		dd 0  ; idt base=0L
 
 gdt_48:		dw gdt.end-gdt-1
-		dd (INITSEG<<4)+gdt-boot_sector  ; gdt base = 0X9xxxx; !! Do we have to relocate this?
+		dd (INITSEG<<4)+gdt-boot_sector  ; gdt base = 0X9xxxx; !! Relocate this if the setup code above works at any segment other than INITSEG.
 
-		times 4*0x200-($-setup_sectors) db 0  ; Omit these bytes, do two `rep movsd's instead.
+		times 4*0x200-($-setup_sectors)-OUR_MULTIBOOT_COPY_CODE32_SIZE db 0  ; Omit these bytes, do two `rep movsd's instead.
+		assert_fofs 0xa00-OUR_MULTIBOOT_COPY_CODE32_SIZE
+		emit_multiboot_copy_code32  ; Must be at the end of the last setup sector, just before code32.
 		assert_fofs 0xa00
-setup_stack:
+setup_stack:  ; 0x200 bytes.
 
-text:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
-		;incbin 'memtest86+-5.01-dist.bin', 0xa00  ; Works.
-		incbin 'memtest86+-5.31b-dist.bin', 0xa00  ; Works.
-
+code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
+		incbin MEMTEST86PLUS5_BIN, 0xa00
 .end:
 
 %else
@@ -265,7 +323,7 @@ text:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. L
 
 		mov ax, 0x1000
 		mov es, ax
-		mov al, [es:0]  ; 'T' in text.
+		mov al, [es:0]  ; 'T' in code32.
 		mov ah, 0xe
 		xor bx, bx
 		int 0x10  ; Print character AL to console.
@@ -300,10 +358,13 @@ text:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. L
 .sector2:	db '2'
 		times 0x200-($-.sector2) db 0
 .sector3:	db '3'
-		times 0x200-($-.sector3) db 0
+		times 0x200-OUR_MULTIBOOT_COPY_CODE32_SIZE-($-.sector3) db 0
+		assert_fofs 0xa00-OUR_MULTIBOOT_COPY_CODE32_SIZE
+		emit_multiboot_copy_code32  ; Must be at the end of the last setup sector, just before code32.
 		assert_fofs 0xa00
 
-text:		; (Should be) 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
+code32:		; (Should be) 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
+		assert_at multiboot_copy_code32.end
 		db 'T'
 .end:
 %endif
