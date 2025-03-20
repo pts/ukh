@@ -17,6 +17,7 @@
 ; * Linux kernel old (<2.00) protocol: Load first 4 sectors (4*0x200 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
 ; * Linux kernel protocol version 2.01: This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
 ; * bs (GRUB *chainloader* command, SYSLINUX *boot* command, PXE network boot): load entire kernel file (not only the first sector) to 0x7c00, set DL to the BIOS drive number, jump to 0:0x7c00. The BOOT_SIGNATURE in file offset range 0x1fe...0x200 is needed by GRUB 1 0.97 `chainloader`, but not `chainloader --force`. It can't receive a command line.
+;   * Please note that this boot mode works only if the bootloader loads the entire kernel file. Universal Kernel Header has a best-effort check for having loaded the first sector only. If the check fails, then it hangs with the message *bF*.
 ; * FreeDOS and SvarDOS *kernel.sys*: load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number.
 ; * EDR-DOS 7.01.07--7.01.08 *drbio.sys*: load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0.
 ; * (impossible to make it work) EDR-DOS 7.01.01--7.01.06 and DR-DOS 7.0--7.01--7.02--7.03--7.05 *ibmbio.com*: They use the same load protocol as EDR-DOS (but with filename *ibmbio.com*), but the boot maximum kernel size its boot sector supports is 29 KiB (way too small for memtest86+), with its *ibmbio.com* being <24.25 KiB.
@@ -70,6 +71,7 @@ cpu 8086
 BOOT_SIGNATURE equ 0xaa55
 
 LINUX_CL_MAGIC equ 0xa33f
+OUR_LINUX_BOOT_PROTOCOL_VERSION equ 0x201  ; 0x201 is the last one which loads everything under 0xa0000. Later versions load code32 above 1 MiB (linear address >=0x100000).
 
 MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
@@ -147,7 +149,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov al, 'N'  ; Indicate Windows NTLDR.
 		jmp short .any_supported_protocol
 .not_ntldr_protocol:
-.not_protocol_with_offset_zero:		
+.not_protocol_with_offset_zero:
 .fatal_unknown_protocol:
 		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
@@ -156,6 +158,20 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		xor bx, bx  ; Set up error message.
 		mov al, 'b'
 		int 0x10  ; Print character in AL.
+
+		mov ds, cx  ; DS := 0.
+		mov es, cx  ; ES := 0.
+		mov si, BOOT_ENTRY_ADDR+.copy_of_setup_sectors-.start
+		inc byte [si+2]  ; 'GdrS' --> 'HdrS'.
+		mov di, BOOT_ENTRY_ADDR+setup_sectors-.start
+		mov cx, (.copy_of_setup_sectors.end-.copy_of_setup_sectors)>>1
+		repe cmpsw
+		je .cmp_matches
+		mov al, 'F'  ; Indicate fatal error: `bF' means that the bootloader has loaded only he first sector.
+		int 0x10
+		jmp short .halt
+.cmp_matches:
+		;xor cx, cx  ; CX := 0. Not needed, CX is now 0.
 		mov al, 's'
 		mov cx, BOOT_ENTRY_ADDR>>4
 .any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sectors; AL is character to print; DL is the BIOS drive number.
@@ -232,6 +248,17 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		pop es
 		jmp (INITSEG+0x20):0  ; Jump to the relocated setup_sectors.start (0x9020:0), simulating a Linux bootloader.
 
+		times (.start-$)&1 nop  ; Align to even.
+.copy_of_setup_sectors:  ; Extra bytes from the beginning of setup_sectors, so that we can figure out that it has been loaded (not only the boot_sector).
+		db 0xeb, setup_sectors.code-(setup_sectors.jump+2)
+		db 'GdrS'  ; Like 'HdrS', but obfuscate it from hex editors.
+		dw OUR_LINUX_BOOT_PROTOCOL_VERSION
+		dd 0
+		dw KERNELSEG
+		dw setup_sectors.kernel_version_string-setup_sectors
+.copy_of_setup_sectors.end:
+		times -((.copy_of_setup_sectors.end-.copy_of_setup_sectors)&1) nop  ; Fail if size is not even. Evenness needed by cmpsw above.
+
 		times 0x1f1-($-.start) db 0
 .linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sectors.linux_boot_header.end.
 		assert_fofs 0x1f1
@@ -259,7 +286,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x202
 .header:	db 'HdrS'  ; (read) Protocol >=2.00 signature. Magic signature “HdrS”.
 		assert_fofs 0x206
-.version:	dw 0x201  ; (read) Linux kernel protocol version supported. This is the last one which loads everything under 0xa0000.
+.version:	dw OUR_LINUX_BOOT_PROTOCOL_VERSION  ; (read) Linux kernel protocol version supported. 0x201 is the last one which loads everything under 0xa0000.
 		assert_fofs 0x208
 .realmode_swtch: dd 0  ; (read, modify optional) Bootloader hook.
 		assert_fofs 0x20c
