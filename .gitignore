@@ -1,3 +1,13 @@
 *~
-*.bin
+/*.bin
 *.ndisasm
+/fd1440k.img
+/fddr703.img
+/fdedr8.img
+/fdfd10.img
+/fdfd11.img
+/fdfd12.img
+/fdfd13.img
+/fdsv249.img
+/fdg4d4.img
+/fdg4d6a.img

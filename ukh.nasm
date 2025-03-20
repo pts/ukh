@@ -7,7 +7,7 @@
 ;
 ; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
 ;
-; !! Compress the 32-bit payload (better than liigboot 16-bit UPX memtest.bs). `upxbc --flat32` compression is better than `upcbc --flat16`, but *flat32* fails to boot. !! Why? Is it because of ESP? !! Currently memtest86+.lzma.kernel.bin doesn't work. !! Also it takes a few seconds to extract.
+; !! Compress the 32-bit payload (better than liigboot 16-bit UPX memtest.bs). This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work. `upxbc --flat32` compression is better than `upcbc --flat16`, but *flat32* fails to boot. !! Why? Is it because of ESP? !! Currently memtest86+.lzma.kernel.bin doesn't work. !! Also it takes a few seconds to extract.
 ; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kerenel old protocol.
 ; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01 binary.
 ;
@@ -16,14 +16,21 @@
 ; * Linux kernel old (<2.00) protocol: Load first 4 sectors (4*0x200 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
 ; * Linux kernel protocol version 2.01: This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
 ; * bs (GRUB chainloader, SYSLINUX boot): load entire kernel file (not only the first sector) to 0x7c00, set DL to the BIOS drive number, jump to 0:0x7c00. The BOOT_SIGNATURE in file offset range 0x1fe...0x200 is needed by GRUB 1 0.97 `chainloader`, but not `chainloader --force`. It can't receive a command line.
-; * !! FreeDOS and SvarDOS kernel.sys: load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number.
-; * !! EDR-DOS drbio.sys: load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0.
-; * !! NTLDR: load at least first 0x24 bytes (.hidden_sector_count or the entire 0x24 byte substring, see https://retrocomputing.stackexchange.com/a/31399) of the boot partition (boot sector) to 0x7c00, load kernel file to 0x20000, set DL to the BIOS drive number, jump to 0x2000:0. No header fields used.
+; * FreeDOS and SvarDOS *kernel.sys*: load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number.
+; * EDR-DOS 7.01.07--7.01.08 *drbio.sys*: load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0.
+; * (impossible to make it work) EDR-DOS 7.01.01--7.01.06 and DR-DOS 7.0--7.01--7.02--7.03--7.05 *ibmbio.com*: They use the same load protocol as EDR-DOS (but with filename *ibmbio.com*), but the boot maximum kernel size its boot sector supports is 29 KiB (way too small for memtest86+), with its *ibmbio.com* being <24.25 KiB.
+; * Windows NTLDR *ntldr* and GRUB4DOS bootlace.com *grldr*: Load at least first 0x24 bytes (.hidden_sector_count or the entire 0x24 byte substring, see https://retrocomputing.stackexchange.com/a/31399) of the boot partition (boot sector) to 0x7c00, load kernel file to 0x20000, set DL to the BIOS drive number, jump to 0x2000:0. No header fields used. The GRUB4DOS boot sector (installed with *bootlace.com*) uses the same protocol, looking for kernel file *grldr* rather than *ntldr*.
 ; * Multiboot v1: It switches immediately to i386 32-bit protected mode. That could work if we set up the header. No need to switch back to real mode. It can receive both command line and BIOS drive number. SYSLINUX supports it only with mboot.c32. Specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 ;   * With Multiboot v1, the kernel command line (passed in the Multiboot info struct) is respected. Test it by passing the btrace (will show the *Press any key to advance to the next trace point* message at startup) from GRUB: `kernel /m.mb btrace` and `boot`.
 ;   * GRUB 1 0.97 detects Multiboot v1 signature first in the first 0x8000 bytes, overriding any other type of detection. Multiboot can also be forced with `kernel --type=multiboot`.
 ;   * Tested with GRUB4DOS 0.4.4 with and without the Multiboot v1 header, also with chainloader (bs). Also tested With SYSLINUX 4.07 linux and boot (bs). !! Test with GRUB 1 0.97.
-; * !! floopy without filesystem: Make the boot_sector read the rest of the file from floppy image, using `qemu-system-i386 -fda'.
+;
+; Support may be added later:
+;
+; * !! floopy without filesystem: Make the boot_sector read the rest of the file from floppy image, using `qemu-system-i386 -fda'. QEMU 2.11.1 detects floppy geometry using the image file size, and falls back to a prefix of 144OK (C*H*S == 80*2*18). See also: https://retrocomputing.stackexchange.com/q/31431/3494
+; * UEFI PE .exe: The latest memtest86+ supports it: https://github.com/memtest86plus/memtest86plus/blob/a10664a2515a81b07ab8ae999f91e8151a87eec6/boot/x86/header.S#L798-L824
+; * MS-DOS and Windows 95--98--ME io.sys: The boot sector loads only the first 3 or 4 sectors of *io.sys*. Also a file named *msdos.sys* must be present for MS-DOS --6.22 boot code.
+; * IBM PC DOS ibmbio.com: The boot sector loads only the first 3 sectors of *ibmbio.com*. Also a file named *ibmbio.com* must be present for IBM PC DOS boot code.
 ;
 ; This Universal Kernel Header doesn't support these load protocols yet:
 ;
@@ -89,59 +96,90 @@ LOADFLAG_READ:
 ; (code32) to KERNELSEG<<4 (== 0x10000) and jumps to 0x9020:0
 ; (setup_sectors) in real mode.
 ;
-; With the bs boot protocol, the bootloader loads everything to
+; With the bs load protocol, the bootloader loads everything to
 ; BOOT_ENTRY_ADDR (0x7c00), and jumps to 0:BOOT_ENTRY_ADDR.
+;
+; Info about the BIOS drive number:
+;
+; * First floppy: 0, second floppy: 1 etc. First HDD: 0x80, second HDD: 0x81 etc.
+; * The bs, DR-DOS, EDR-DOS and NTLDR load protocols pass it in DL.
+; * The FreeDOS load protocol passes it in BL.
+; * The DR-DOS 7.03 boot sector passes it in DL only.
+; * The EDR-DOS 7.01.08 boot sector passes it in both BL and DL (BL is unnecessary).
+; * The FreeDOS (checked versions 1.0--1.1--1.2--1.3) and SvarDOS (checked version 20240915) boot sector passes it in both BL and DL (DL is unnecessary).
+; * The FreeDOS (checked version 1.3) kernel gets it from BL.
+; * The SvarDOS (checked version 20240915) gets it from BL if the initial CS is 0x60 (FreeDOS load protocol), and from DL if the initial CS is 0x70 (DR-DOS load protocol).
 boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
 .start:		;jmp short .code  ; Not needed.
 .cl_magic equ .start+0x20  ; The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
 .cl_offset equ .start+0x22  ; The Linux bootloader will set this to (dw) the offset of the kernel command line.
 
-.code:		mov ax, 0xe00+'?'  ; Set up error message.
-		xor bx, bx  ; Set up error message.
+.code:		cld
+		mov ax, 0xe00+'?'  ; Set up error message.
+		call .here
+.here:		pop si  ; SI := actual offset of .here.
+		sub si, byte .here-.start  ; SI := actual offset of .start.
 		mov cx, cs
 		test cx, cx
 		jnz short .not_bs_protocol
-		call .here
-.here:		pop cx  ; DX := actual offset of .here.
-		cmp cx, BOOT_ENTRY_ADDR+.here-.start
+		cmp si, BOOT_ENTRY_ADDR
 		je short .bs_protocol
 .not_bs_protocol:
+		test si, si
+		jnz short .not_protocol_with_offset_zero
+		cmp cx, byte 0x60
+		jne short .not_freedos_protocol
+.freedos_protocol:  ; Used by FreeDOS and SvarDOS.
+		mov dl, bl  ; Save BIOS drive number.
+		mov al, 'F'  ; Indicate FreeDOS.
+		jmp short .any_supported_protocol  ; !! Also receive the FreeDOS (bleeding edge, more reent than the kernel in FreeDOS 1.3) command line.
+.not_freedos_protocol:
+		cmp cx, byte 0x70
+		jne short .not_drdos_protocol
+.drdos_protocol:  ; Used by DR-DOS, EDR-DOS. SvarDOS can also boot from it.
+		mov al, 'D'  ; Indicate DR-DOS.
+		jmp short .any_supported_protocol
+.not_drdos_protocol:
+.not_protocol_with_offset_zero:		
+.fatal_unknown_protocol:
+		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
 .halt:		halt
-.bs_protocol:
+.bs_protocol:  ; Now: CX == 0; DS == 0; SI == 0x7c00 == BOOT_ENTRY_ADDR; DL is the bios drive number.
+		xor bx, bx  ; Set up error message.
 		mov al, 'b'
 		int 0x10  ; Print character in AL.
 		mov al, 's'
+		mov cx, BOOT_ENTRY_ADDR>>4
+.any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sectors; AL is character to print; DL is the BIOS drive number.
+		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
-		mov al, dl  ; Good: Both SYSLINUX 4.07 boot and GRUB4DOS chainloader pass the BIOS drive number (e.g. 0x80 for first HDD) in DL.
-%if 0
-		jmp short .not_bs_protocol
-%else
-		int 0x10  ; Print BiOS boot drive character. !! No ned to print these.
+		mov al, dl  ; Good: YSLINUX 4.07 boot, GRUB4DOS chainloader and FreeDOS boot sector pass the BIOS drive number (e.g. 0x80 for first HDD) in DL.
+		int 0x10  ; Print BiOS boot drive character. !! No need to print these.
 
 		; Set up some segments and stack.
 		mov ax, INITSEG
 		mov es, ax
-		mov ds, bx  ; 0.
 		cli
 		mov ss, ax
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
-		cld
 
-		; Copy 5*0x200 bytes from BOOT_ENTRY_ADDR == 0x7c00 to INITSEG<<4 == 0x90000. There is no overlap.
-		mov si, BOOT_ENTRY_ADDR
+		; Copy 5*0x200 bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
+		mov ds, cx
+		xor si, si
 		xor di, di
-		mov cx, (5*0x200)>>1  ; Number of word to copy.
+		mov cx, (5*0x200)>>1  ; Number of words to copy.
 		rep movsw
 
 		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+5*0x200 == 0x8600 to KERNELSEG<<4 == 0x10000. Copy them in reverse, because they may overlap.
 		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
-		mov ax, KERNELSEG                     +((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last destination sector.
+		mov ax, KERNELSEG+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last destination sector.
 		mov es, ax
-		mov ax, ((BOOT_ENTRY_ADDR+5*0x200)>>4)+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last source      sector.
+		mov ax, ds
+		add ax, strict word ((5*0x200)>>4)+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last source sector.
 		mov ds, ax
-  .copy_sector: mov cx, 0x100  ; Number of words in a sector.
+.copy_sector:	mov cx, 0x200>>1  ; Number of words in a sector.
 		xor si, si
 		xor di, di
 		rep movsw
@@ -158,12 +196,11 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 
-		push ss
+		push ss  ; INITSEG (== 0x9000).
 		pop ds
-		push ss
+		push ss  ; INITSEG (== 0x9000).
 		pop es
 		jmp (INITSEG+0x20):0  ; Jump to the relocated setup_sectors.start (0x9020:0), simulating a Linux bootloader.
-%endif
 
 		times 0x1f1-($-.start) db 0
 .linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sectors.linux_boot_header.end.
@@ -237,6 +274,13 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
   %endif
   .code:  ; The entry point jumps here.
+
+%if 0  ; For debugging.
+		mov ax, 0xe00+'S'
+		xor bx, bx
+		int 0x10  ; Print character in AL.
+%endif
+
 		cli ; no interrupts allowed
 		jmp INITSEG:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
 .ck:		cld
