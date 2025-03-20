@@ -140,6 +140,12 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov al, 'D'  ; Indicate DR-DOS.
 		jmp short .any_supported_protocol
 .not_drdos_protocol:
+		cmp cx, 0x2000
+		jne short .not_ntldr_protocol
+.ntldr_protocol:  ; NTLDR, used by Windows NT 3.1--4.0, Windows 2000--XP. Later releases of Windows may use a similar protocol, but the filename is *bootmgr* rather than *ntldr*.
+		mov al, 'N'  ; Indicate Windows NTLDR.
+		jmp short .any_supported_protocol
+.not_ntldr_protocol:
 .not_protocol_with_offset_zero:		
 .fatal_unknown_protocol:
 		xor bx, bx  ; Set up error message.
@@ -158,7 +164,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		int 0x10  ; Print BiOS boot drive character. !! No need to print these.
 
 		; Set up some segments and stack.
-		mov ax, INITSEG
+		mov ax, INITSEG  ; !! size optimization for INITSEG.
 		mov es, ax
 		cli
 		mov ss, ax
@@ -171,23 +177,43 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		xor di, di
 		mov cx, (5*0x200)>>1  ; Number of words to copy.
 		rep movsw
+		jmp INITSEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to KERNELSEG). Needed for the NTLDR load protocol.
+.after_far_jmp:
 
-		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+5*0x200 == 0x8600 to KERNELSEG<<4 == 0x10000. Copy them in reverse, because they may overlap.
+		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+5*0x200
+		; == 0x8600 to KERNELSEG<<4 == 0x10000. Copy them in
+		; reverse, because they may overlap.
+		;
+		; We copy one sector (0x200) bytes at a time. This is
+		; arbitrary. But we can't copy in one go, because the data
+		; size is >=64 KiB, so we have to modify some segment registers.
+		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
+		mov cx, ds
+		cmp cx, KERNELSEG
+		jae .setup_forward_copy
+.setup_backward_copy:  ; Copy them in backward (descending), because the destination comes after the source, and they may overlap.
+		neg dx  ; DX := -(0x200)>>4.
 		mov ax, KERNELSEG+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last destination sector.
 		mov es, ax
-		mov ax, ds
-		add ax, strict word ((5*0x200)>>4)+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last source sector.
-		mov ds, ax
+		add cx, strict word ((5*0x200)>>4)+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last source sector.
+		jmp short .cont_setup_copy
+.setup_forward_copy:  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
+		;mov dx, 0x200>>4  ; Already set.
+		mov ax, KERNELSEG  ; Segment of first destination sector. !! size optimization: mov es, [setup_sectors.start_sys_seg] -- or: cmp cx, ax above.
+		mov es, ax
+		add cx, strict word (5*0x200)>>4 ; Segment of first source sector (with offset 0 it points to code32). !! size optimization: use this offset in DI.
+.cont_setup_copy:
+		mov ds, cx
 .copy_sector:	mov cx, 0x200>>1  ; Number of words in a sector.
 		xor si, si
 		xor di, di
 		rep movsw
 		mov ax, ds
-		sub ax, strict word 0x200>>4
+		add ax, dx ; [+-] (0x200>>4)
 		mov ds, ax
 		mov ax, es
-		sub ax, strict word 0x200>>4
+		add ax, dx ; [+-] (0x200>>4)
 		mov es, ax
 		dec bx
 		jnz short .copy_sector
