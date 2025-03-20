@@ -1,6 +1,8 @@
 *~
 /*.bin
 *.ndisasm
+*.bs
+*.k
 /fd1440k.img
 /fddr703.img
 /fdedr8.img

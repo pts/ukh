@@ -8,6 +8,8 @@ if ! test -f memtest86+-5.01-dist-lzma.bin; then
   (dd if=/dev/zero bs=512 count=5 && cat upxbc2.tmp) >memtest86+-5.01-dist-lzma.bin || exit "$?"
 fi
 
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs stage2.nasm
+
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -o memtest86+.kernel.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -DMULTIBOOT -o memtest86+.multiboot.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist-lzma.bin'" -o memtest86+.lzma.kernel.bin ukh.nasm  # !! This doesn't work yet.
@@ -29,6 +31,7 @@ rm -f liigboot.zip
 cp -a liigboot.zip.orig liigboot.zip
 mcopy -bsomp -i liigboot.zip memtest86+.multiboot.bin ::M.MB
 mcopy -bsomp -i liigboot.zip memtest86+.kernel.bin ::M.K
+mcopy -bsomp -i liigboot.zip grub1.bs ::GRUB1.BS
 mcopy -bsomp -i liigboot.zip syslinux.cfg ::SYSLINUX.CFG
 mcopy -bsomp -i liigboot.zip menu.lst ::MENU.LST
 
