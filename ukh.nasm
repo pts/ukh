@@ -1,5 +1,5 @@
 ;
-; ukh.nasm: Universal Kernel Header for memtest86+-5.01
+; ukh.nasm: Universal Kernel Header (UKH) for memtest86+-5.01
 ; by pts@fazekas.hu at Mon Mar 17 13:45:39 CET 2025
 ;
 ; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -o memtest86+.kernel.bin ukh.nasm
@@ -8,10 +8,11 @@
 ; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
 ;
 ; !! Compress the 32-bit payload (better than liigboot 16-bit UPX memtest.bs). This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work. `upxbc --flat32` compression is better than `upcbc --flat16`, but *flat32* fails to boot. !! Why? Is it because of ESP? !! Currently memtest86+.lzma.kernel.bin doesn't work. !! Also it takes a few seconds to extract.
-; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kerenel old protocol.
+; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kernel old protocol.
 ; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01 binary.
+; !! Instead of halting, wait for keypress and reboot.
 ;
-; The Universal Kernel Header emitted by this file supports multiple load protocols:
+; The Universal Kernel Header (UKH) emitted by this file supports multiple load protocols:
 ;
 ; * Linux kernel old (<2.00) protocol: Load first 4 sectors (4*0x200 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
 ; * Linux kernel protocol version 2.01: This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
@@ -23,7 +24,7 @@
 ; * Multiboot v1: It switches immediately to i386 32-bit protected mode. That could work if we set up the header. No need to switch back to real mode. It can receive both command line and BIOS drive number. SYSLINUX supports it only with mboot.c32. Specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 ;   * With Multiboot v1, the kernel command line (passed in the Multiboot info struct) is respected. Test it by passing the btrace (will show the *Press any key to advance to the next trace point* message at startup) from GRUB: `kernel /m.mb btrace` and `boot`.
 ;   * GRUB 1 0.97 detects Multiboot v1 signature first in the first 0x8000 bytes, overriding any other type of detection. Multiboot can also be forced with `kernel --type=multiboot`.
-;   * Tested with GRUB4DOS 0.4.4 with and without the Multiboot v1 header, also with chainloader (bs). Also tested With SYSLINUX 4.07 linux and boot (bs). !! Test with GRUB 1 0.97.
+;   * Tested with GRUB4DOS 0.4.4 with and without the Multiboot v1 header, also with chainloader (bs). Also tested With SYSLINUX 4.07 linux and boot (bs). !! Test with GRUB 1 0.97. chainloader doesn't work, it loads only 1 sector.
 ;
 ; Support may be added later:
 ;
@@ -91,7 +92,7 @@ LOADFLAG_READ:
 		jmp short %%back
 %endm
 
-; With the Linux boot protocols, the bootloader loads the first 5*0x200
+; With the Linux kernel protocols, the bootloader loads the first 5*0x200
 ; bytes (boot_sector and setup_sectors) to INITSEG<<4 (== 0x90000), the rest
 ; (code32) to KERNELSEG<<4 (== 0x10000) and jumps to 0x9020:0
 ; (setup_sectors) in real mode.
@@ -238,10 +239,10 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		assert_fofs 0x1f2
 .root_flags:	dw 0  ; (read, modify optional) If set, the root is mounted readonly.
 		assert_fofs 0x1f4
-.syssize_low:	dw (code32.end-code32+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but boot protocol <=2.01 supports zImage only, with its maximum size of 0x9000-0x200*(1+.setup_sects) bytes.
+.syssize_low:	dw (code32.end-code32+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but Linux kernel protocol <=2.01 supports zImage only, with its maximum size of 0x9000-0x200*(1+.setup_sects) bytes.
 		assert_fofs 0x1f6
 .swap_dev:
-.syssize_high:	dw 0  ; (read) The high word size of the 32-bit code in 16-byte paras. For boot protocol prior to 2.04, the upper two bytes of the syssize field are unusable, which means the size of a bzImage kernel cannot be determined.
+.syssize_high:	dw 0  ; (read) The high word size of the 32-bit code in 16-byte paras. For Linux kernel protocol prior to 2.04, the upper two bytes of the syssize field are unusable, which means the size of a bzImage kernel cannot be determined.
 		assert_fofs 0x1f8
 .ram_size:	dw 0  ; (kernel internal) DO NOT USE - for bootsect.S use only.
 		assert_fofs 0x1fa
@@ -258,7 +259,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x202
 .header:	db 'HdrS'  ; (read) Protocol >=2.00 signature. Magic signature “HdrS”.
 		assert_fofs 0x206
-.version:	dw 0x201  ; (read) Boot protocol version supported. This is the last one which loads everything under 0xa0000.
+.version:	dw 0x201  ; (read) Linux kernel protocol version supported. This is the last one which loads everything under 0xa0000.
 		assert_fofs 0x208
 .realmode_swtch: dd 0  ; (read, modify optional) Bootloader hook.
 		assert_fofs 0x20c
@@ -268,7 +269,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x210
 .type_of_loader: db 0  ; (write obligatory) Bootloader identifier.
 		assert_fofs 0x211
-.loadflags:	db 0  ; Boot protocol option flags. Not specifying LOADFLAG.HIGH, so the the protected-mode code is will be loaded at 0x10000 (== .start_sys_seg<<4 == KERNELSEG<<4).
+.loadflags:	db 0  ; Linux kernel protocol option flags. Not specifying LOADFLAG.HIGH, so the the protected-mode code is will be loaded at 0x10000 (== .start_sys_seg<<4 == KERNELSEG<<4).
 		assert_fofs 0x212
 .setup_move_size: dw 0  ; (modify obligatory) Move to high memory size (used with hooks). When using protocol 2.00 or 2.01, if the real mode kernel is not loaded at 0x90000, it gets moved there later in the loading sequence. Fill in this field if you want additional data (such as the kernel command line) moved in addition to the real-mode kernel itself.
 		assert_fofs 0x214
@@ -298,7 +299,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
   KERNEL_CS equ 0x10
   KERNEL_DS equ 0x18
 
-  .kernel_version_string: db 'memtest86+-5.01', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
+  .kernel_version_string: db 'memtest86+-5.01', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes). !! Make this configurable.
   %if $-.start<0x30
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
   %endif
