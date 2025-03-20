@@ -9,6 +9,7 @@ if ! test -f memtest86+-5.01-dist-lzma.bin; then
 fi
 
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs stage2.nasm
+#nasm-0.98.39 -O0 -w+orphan-labels -f bin -DPATCH -o grub1.bs stage2.nasm
 
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -o memtest86+.kernel.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -DMULTIBOOT -o memtest86+.multiboot.bin ukh.nasm
