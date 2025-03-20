@@ -164,20 +164,20 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		int 0x10  ; Print BiOS boot drive character. !! No need to print these.
 
 		; Set up some segments and stack.
-		mov ax, INITSEG  ; !! size optimization for INITSEG.
-		mov es, ax
+		mov ds, cx  ; After this (until we break DS again) global variables work.
+		mov es, [.initseg_const-.start]  ; ES := INITSEG.
 		cli
 		mov ss, ax
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
 		; Copy 5*0x200 bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
-		mov ds, cx
 		xor si, si
 		xor di, di
 		mov cx, (5*0x200)>>1  ; Number of words to copy.
 		rep movsw
 		jmp INITSEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to KERNELSEG). Needed for the NTLDR load protocol.
+.initseg_const equ $-2
 .after_far_jmp:
 
 		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+5*0x200
@@ -190,23 +190,26 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		mov cx, ds
-		cmp cx, KERNELSEG
-		jae .setup_forward_copy
+		mov ax, KERNELSEG
+		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus (5*0x200)>>4; AX == KERNELSEG.
+		cmp cx, ax
+		jae .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
 .setup_backward_copy:  ; Copy them in backward (descending), because the destination comes after the source, and they may overlap.
-		neg dx  ; DX := -(0x200)>>4.
-		mov ax, KERNELSEG+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last destination sector.
-		mov es, ax
-		add cx, strict word ((5*0x200)>>4)+((((code32.end-code32+0x1ff)>>9)-1)<<5)  ; Segment of last source sector.
-		jmp short .cont_setup_copy
-.setup_forward_copy:  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
+		neg dx  ; DX := -(0x200)>>4. Change copy direction to descending.
+		add ax, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust destination segment to point to the last sector.
+		add cx, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust source      segment to point to the last sector.
+		;jmp short .after_setup_copy  ; Not needed, falls through.
+;.setup_forward_copy:
 		;mov dx, 0x200>>4  ; Already set.
-		mov ax, KERNELSEG  ; Segment of first destination sector. !! size optimization: mov es, [setup_sectors.start_sys_seg] -- or: cmp cx, ax above.
-		mov es, ax
-		add cx, strict word (5*0x200)>>4 ; Segment of first source sector (with offset 0 it points to code32). !! size optimization: use this offset in DI.
-.cont_setup_copy:
+		;mov ax, KERNELSEG  ; Already set. AX := segment of first destination sector.
+		;mov es, ax  ; Already set. ES := segment of first destination sector.
+		;add cx, 0 ; Already set. CX := segment of first source sector (with offset 0 it points to code32), minus (5*0x200)>>4.
+		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to code32), minus (5*0x200)>>4.
+.after_setup_copy:
 		mov ds, cx
+		mov es, ax
 .copy_sector:	mov cx, 0x200>>1  ; Number of words in a sector.
-		xor si, si
+		mov si, 5*0x200  ; Skip over boot_sector+setup_sectors.
 		xor di, di
 		rep movsw
 		mov ax, ds
