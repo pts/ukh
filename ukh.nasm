@@ -7,8 +7,12 @@
 ;
 ; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
 ;
-; !! Compress the 32-bit payload (better than liigboot 16-bit UPX memtest.bs). This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work. `upxbc --flat32` compression is better than `upcbc --flat16`, but *flat32* fails to boot. !! Why? Is it because of ESP? !! Currently memtest86+.lzma.kernel.bin doesn't work. !! Also it takes a few seconds to extract.
+; !! Compress the 32-bit payload with `upxbc --flat32`. This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work.
 ; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kernel old protocol.
+; !! Add progress indicator to the LZMA decompressor.
+; !! Add support for 16-bit payload.
+; !! Add support for multiboot with 16-bit payload. Switch back to real mode.
+; !! Add `upxbc --flat16x` and `apack1p -1 -x` compressor for the 16-bit payload. Make this compression without a prefix.
 ; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01 binary.
 ; !! Instead of halting, wait for keypress and reboot.
 ;
@@ -342,8 +346,8 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		jmp INITSEG:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
 .ck:		cld
 
-		; now we want to move to protected mode ...
-		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed?
+		; now we want to move to protected mode ... !! Consider alternatives, such as how SYSLINUX 4.07 does it or how GRUB 1 0.97 does it.
+		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed? https://wiki.osdev.org/Protected_Mode
 		out 0x70, al
 
 		; The system will move itself to its rightful place.
@@ -353,7 +357,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov ds, ax
 		mov es, ax
 		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
-		mov esp, setup_stack+0x200-boot_sector  ; 0x200 bytes of stack. We set ESP because we'd need all 32 bits of it in protected mode.
+		mov esp, setup_stack+0x200-boot_sector  ; 0x200+0xa00-0x24 bytes of stack. We set ESP because we'd need all 32 bits of it in protected mode. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
 		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
 		lidt [idt_48-boot_sector]  ; load idt with 0,0
 		lgdt [gdt_48-boot_sector]  ; load gdt with whatever appropriate
@@ -370,7 +374,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		jz short alt_a20_done
 
 		; set or clear bit1, the ALT_A20_GATE bit
-		mov ah, [esp+4]
+		mov ah, [esp+4]  ; !!! Where does this come from? Who puts this value to ESP?
 		test ah, ah
 		jz short alt_a20_cont1
 		or al, 2
@@ -435,17 +439,20 @@ delay:		jmp short .next
 gdt:		dw 0,0,0,0  ; Segment 0. Dummy.
 		dw 0,0,0,0  ; Segment 8. Unused.
 
-		; KERNEL_CS == segment 0x10.
-		dw 0x7fff  ; limit 128mb
+		; KERNEL_CS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+		dw 0x7fff  ; limit 128mb !! Why not unlimited?
 		dw 0x0000  ; base address=0
 		dw 0x9a00  ; code read/exec
 		dw 0x00c0  ; granularity=4096, 386
+		; !! QEMU 2.11.1 has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (full 4 GiB?!).
 
-		; KERNEL_CS == segment 0x18.
-		dw 0x7fff  ; limit 128mb
+		; KERNEL_DS == segment 0x18. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+		dw 0x7fff  ; limit 128mb !! Why not unlimited?
 		dw 0x0000  ; base address=0
 		dw 0x9200  ; data read/write
 		dw 0x00c0  ; granularity=4096, 386
+		; !! QEMU 2.11.1 has here: dw 0xffff, 0, 0x92, 0xcf  ; Only the limit is different (full 4 GiB?!).
+
 .end:
 
 idt_48:		dw 0  ; idt limit=0
