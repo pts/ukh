@@ -438,21 +438,21 @@ delay:		jmp short .next
 .next:		ret
 
 gdt:		dw 0,0,0,0  ; Segment 0. Dummy.
-		dw 0,0,0,0  ; Segment 8. Unused.
+		dw 0,0,0,0  ; Segment 8. Unused. !! Remove it.
 
 		; KERNEL_CS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
-		dw 0x7fff  ; limit 128mb !! Why not unlimited?
+		dw 0xffff  ; limit full 4 GiB.
 		dw 0x0000  ; base address=0
 		dw 0x9a00  ; code read/exec
-		dw 0x00c0  ; granularity=4096, 386
-		; !! QEMU 2.11.1 has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (full 4 GiB?!).
+		dw 0x00cf  ; granularity=4096, 386
+		; QEMU 2.11.1 has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
 
 		; KERNEL_DS == segment 0x18. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
-		dw 0x7fff  ; limit 128mb !! Why not unlimited?
+		dw 0x7fff  ; limit full 4 GiB.
 		dw 0x0000  ; base address=0
 		dw 0x9200  ; data read/write
-		dw 0x00c0  ; granularity=4096, 386
-		; !! QEMU 2.11.1 has here: dw 0xffff, 0, 0x92, 0xcf  ; Only the limit is different (full 4 GiB?!).
+		dw 0x00cf  ; granularity=4096, 386
+		; QEMU 2.11.1 has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
 
 .end:
 
