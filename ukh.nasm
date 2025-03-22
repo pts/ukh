@@ -412,7 +412,9 @@ alt_a20_done:
 		mov ss, ax
 		mov fs, ax
 		mov gs, ax
-		dw 0xea66, (KERNELSEG<<4)&0xffff, (KERNELSEG<<4)>>16, KERNEL_CS  ; 32bit ljmp KERNEL_CS:(KERNELSEG<<4)
+
+		; No need to set .cl_magic, we are not passing a command line.
+		jmp KERNEL_CS:dword (KERNELSEG<<4)
 
 		; This routine checks that the keyboard command queue is empty
 		; (after emptying the output buffers)
