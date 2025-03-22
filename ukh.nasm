@@ -329,9 +329,6 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 
   base: equ setup_sectors
 
-  KERNEL_CS equ 0x10
-  KERNEL_DS equ 0x18
-
   .kernel_version_string: db 'memtest86+-5.01', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes). !! Make this configurable.
   %if $-.start<0x30
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
@@ -361,7 +358,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
 		mov sp, setup_stack+0x200-boot_sector  ; 0x200+0xa00-0x24 bytes of real-mode stack. We need only a few bytes below for calls. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
 		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
-		lidt [idt_48-boot_sector]  ; load idt with 0,0
+		lidt [idt_48-boot_sector]  ; load idt with 0,0  !! Why set it at to empty at all? QEMU 2.11.1 doesn't set it. https://stackoverflow.com/q/79526862 https://stackoverflow.com/a/5128933
 		lgdt [gdt_48-boot_sector]  ; load gdt with whatever appropriate
 
 		; that was painless, now we enable A20
@@ -441,22 +438,20 @@ empty_8042:	call delay
 delay:		jmp short .next
 .next:		ret
 
-gdt:		dw 0,0,0,0  ; Segment 0. Dummy.
-		dw 0,0,0,0  ; Segment 8. Unused. !! Remove it.
-
-		; KERNEL_CS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+; !!! Move GDT earlier (near the beginning of setup_sectors), so that it remains valid. Document it.
+gdt:		dw 0, 0, 0, 0  ; Segment 0. Null. Present because access won't work anyway: https://stackoverflow.com/a/33198311
+KERNEL_CS: equ $-gdt  ; KERNEL_CS == segment 0x8. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
 		dw 0xffff  ; limit full 4 GiB.
 		dw 0x0000  ; base address=0
 		dw 0x9a00  ; code read/exec
 		dw 0x00cf  ; granularity=4096, 386
-		; QEMU 2.11.1 has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
-
-		; KERNEL_DS == segment 0x18. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+KERNEL_DS: equ $-gdt  ; KERNEL_DS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
 		dw 0x7fff  ; limit full 4 GiB.
 		dw 0x0000  ; base address=0
 		dw 0x9200  ; data read/write
 		dw 0x00cf  ; granularity=4096, 386
-		; QEMU 2.11.1 has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
 
 .end:
 
