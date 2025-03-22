@@ -30,6 +30,7 @@
 ;   * With Multiboot v1, the kernel command line (passed in the Multiboot info struct) is respected. Test it by passing the btrace (will show the *Press any key to advance to the next trace point* message at startup) from GRUB: `kernel /m.mb btrace` and `boot`.
 ;   * GRUB 1 0.97 detects Multiboot v1 signature first in the first 0x8000 bytes, overriding any other type of detection. Multiboot can also be forced with `kernel --type=multiboot`.
 ;   * Tested with GRUB4DOS 0.4.4 with and without the Multiboot v1 header, also with chainloader (bs). Also tested With SYSLINUX 4.07 linux and boot (bs). !! Test with GRUB 1 0.97. chainloader doesn't work, it loads only 1 sector.
+;   * QEMU 2.11.1 `qemu-system-i386 -kernel` tries to find the Linux kernel protocol >=2.00 header (`HdrS`) first, and then it tries to find the Multiboot v1 header. GRUB 1 0.97 and GRUB4DOS do the opposite order.
 ;
 ; Support may be added later:
 ;
@@ -182,7 +183,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
 		mov al, dl  ; Good: YSLINUX 4.07 boot, GRUB4DOS chainloader and FreeDOS boot sector pass the BIOS drive number (e.g. 0x80 for first HDD) in DL.
-		int 0x10  ; Print BiOS boot drive character. !! No need to print these.
+		int 0x10  ; Print BIOS boot drive character. !! No need to print these.
 
 		; Set up some segments and stack.
 		mov ds, cx  ; After this (until we break DS again) global variables work.
@@ -380,11 +381,11 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		or al, 2
 		jmp short alt_a20_cont2
 alt_a20_cont1:
-		and al, 0xfd
+		and al, ~2
 
 		; clear the INIT_NOW bit; don't accidently reset the machine
 alt_a20_cont2:
-		and al, 0xfe
+		and al, ~1
 		out dx, al
 
 alt_a20_done:
@@ -399,10 +400,10 @@ alt_a20_done:
 		out 0x60, al
 		call empty_8042
 
+		mov ax, 0x0001  ; protected mode (PE) bit
+		lmsw ax
 		; Note that the short jump isn't strictly needed, althought there are
 		; reasons why it might be a good idea. It won't hurt in any case.
-		mov ax, 0x0001  ; protected mode (PE) bit
-		lmsw ax  ; This is it;
 		jmp short .flush_instr
 .flush_instr:	mov ax, KERNEL_DS
 		mov ds, ax
@@ -495,7 +496,7 @@ multiboot:
 		mov edi, KERNELSEG<<4
 		push edi
 		mov ecx, (code32.end-code32+3)>>2
-		rep movsd
+		rep movsd  ; We need this move, the memtest86+-5.x 32-bit kernel is not position-independent.
 		ret  ; Jump to KERNELSEG<<4.
 
 		times (boot_sector.start-$)&3 nop  ; Align to multiple of 4.
