@@ -189,6 +189,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov ds, cx  ; After this (until we break DS again) global variables work.
 		mov es, [.initseg_const-.start]  ; ES := INITSEG.
 		cli
+		mov ax, INITSEG
 		mov ss, ax
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
