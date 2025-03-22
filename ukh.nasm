@@ -7,6 +7,8 @@
 ;
 ; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
 ;
+; !! Pass the BIOS drive number for both Multiboot and non-Multiboot protocols at byte [0x9001f], or 0xff if unknown.
+; !! Move the kernel command line to linear address 0x90026.
 ; !! Compress the 32-bit payload with `upxbc --flat32`. This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work.
 ; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kernel old protocol.
 ; !! Add progress indicator to the LZMA decompressor.
@@ -15,6 +17,7 @@
 ; !! Add `upxbc --flat16x` and `apack1p -1 -x` compressor for the 16-bit payload. Make this compression without a prefix.
 ; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01 binary.
 ; !! Instead of halting, wait for keypress and reboot.
+; !! See how much better memtest86+-5.01.bin compresses (uncompressed size is about 32 KiB larger).
 ;
 ; The Universal Kernel Header (UKH) emitted by this file supports multiple load protocols:
 ;
@@ -35,6 +38,7 @@
 ; Support may be added later:
 ;
 ; * !! floopy without filesystem: Make the boot_sector read the rest of the file from floppy image, using `qemu-system-i386 -fda'. QEMU 2.11.1 detects floppy geometry using the image file size, and falls back to a prefix of 144OK (C*H*S == 80*2*18). See also: https://retrocomputing.stackexchange.com/q/31431/3494
+; * !! DOS MZ .exe, just to report that this is a kernel file which cannot be executed ni DOS
 ; * UEFI PE .exe: The latest memtest86+ supports it: https://github.com/memtest86plus/memtest86plus/blob/a10664a2515a81b07ab8ae999f91e8151a87eec6/boot/x86/header.S#L798-L824
 ; * MS-DOS and Windows 95--98--ME io.sys: The boot sector loads only the first 3 or 4 sectors of *io.sys*. Also a file named *msdos.sys* must be present for MS-DOS --6.22 boot code.
 ; * IBM PC DOS ibmbio.com: The boot sector loads only the first 3 sectors of *ibmbio.com*. Also a file named *ibmbio.com* must be present for IBM PC DOS boot code.
@@ -44,6 +48,22 @@
 ; * NTLDR from Windows NT boot.ini (`C:\NTLDR="label"`): It loads only the first 0x10 (== 16) sectors of the *ntldr* file, otherwise the same as the supported NTLDR above.
 ; * MS-DOS v6: MS-DOS 3.30--6.22, IBM PC DOS 3.30--6.x. IBM PC DOS 7.0--7.1 is almost identical. This loads only the first 3 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0. It passes some info in registers and memory.
 ; * MS-DOS v7: MS-DOS 7.0--7.1--8.0, Windows 95--98--ME. This loads only the first 4 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0x200. It passes some info in registers and memory.
+;
+; The UKH load protocol for the 32-bit kernel (code32):
+;
+; * The 32-bit kernel (code and data) is loaded to absolute linear address 0x10000, and the CPU is jumped to this address in i386+ 32-bit protected mode.
+; * The maximum kernel size (including code, data and uninitialized data) is 512 KiB == 0x80000 bytes. (This corresponds to the maximum file size of a Linux zImage kernel.)
+; * Uninitialized data after the loaded kernel code and data is not initialized, and can contain arbitary values. (This differs from C global variables in .bss, which are zero-initialized.)
+; * The A20 gate (A20 line) is enabled. See also: https://en.wikipedia.org/wiki/A20_line
+; * BIOS functionality is still available if the kernel switches back to real (8086) mode.
+; * Interrupts are disabled on entry (IF == 0, cli). The contents of the IDT is undefined.
+; * In EFLAGS, OF=0, DF=0, IF=0, SF=0, ZF=1, AF=0, PF=1, CF=0, other flags are in an undefined state.
+; * ESP is set to 0x10000, this gives the program an initial stack of 0x10000-0x600 == 0xfa00 == 64000 bytes after the BIOS data area.
+; * EAX, EBX, ECX, EDX, ESI, EDI and EBP are set to 0.
+; * CS is a read-execute full 4 GiB linear code segment, DS, ES, FS, GS and SS are the same read-write full 4 GiB linear data segment. Actual available memory may be less.
+; * If there was a kernel command line, word [0x90020] is set to 0xa33f, and dword [0x90022] points to the command line (NUL-terminated byte string).
+;   This is compatible with Linux kernel load protocol <=2.01, in which the pointer value is 0x90000 + word [0x90022].
+; * The initial GDT is stored as 0x18 bytes at linear address 0x90000.
 ;
 ; SYSLINUX 4.07 supports these file formats:
 ;
@@ -82,8 +102,8 @@ MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
 MULTIBOOT_INFO_CMDLINE equ 1<<2
 OUR_MULTIBOOT_FLAGS equ MULTIBOOT_FLAG_AOUT_KLUDGE
-OUR_MULTIBOOT_LOAD_ADDR equ 0x100000
-OUR_MULTIBOOT_STARTUP_CODE_SIZE equ 0x44
+OUR_MULTIBOOT_STARTUP_CODE_SIZE equ 0x60
+OUR_MULTIBOOT_LOAD_ADDR equ 0x100000  ; The minimum value is 0x100000 (1 MiB), otherwise GRUB 1 0.97 fails with: Error 7: Loading below 1MB is not supported
 OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 
 KERNELSEG equ 0x1000
@@ -118,15 +138,33 @@ LOADFLAG_READ:
 ; * The FreeDOS (checked version 1.3) kernel gets it from BL.
 ; * The SvarDOS (checked version 20240915) gets it from BL if the initial CS is 0x60 (FreeDOS load protocol), and from DL if the initial CS is 0x70 (DR-DOS load protocol).
 boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
-.start:		;jmp short .code  ; Not needed.
-.cl_magic equ .start+0x20  ; The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
-.cl_offset equ .start+0x22  ; The Linux bootloader will set this to (dw) the offset of the kernel command line.
-
+.start:
+.cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
+.cl_offset equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
+.cl_offset_high_word equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
+.gdt:  ; The first GDT entry (8 bytes) can contain arbitrary bytes, so we overlap it with boot code. https://stackoverflow.com/a/33198311
+		; The GDT has to remain valid until the next lgdt instruction (potentially long), so we'll keep it at linear address 0x90000.
 .code:		cld
-		mov ax, 0xe00+'?'  ; Set up error message.
 		call .here
 .here:		pop si  ; SI := actual offset of .here.
-		sub si, byte .here-.start  ; SI := actual offset of .start.
+		jmp short .code2
+		nop  ; Padding for the first GDT entry.
+		assert_at .gdt+8  ; End if first GDT entry.
+..@KERNEL_CS: equ $-.gdt  ; KERNEL_CS == segment 0x8. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
+		dw 0xffff  ; limit full 4 GiB.
+		dw 0x0000  ; base address=0
+		dw 0x9a00  ; code read/exec
+		dw 0x00cf  ; granularity=4096, 386
+..@KERNEL_DS: equ $-.gdt  ; KERNEL_DS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
+		dw 0x7fff  ; limit full 4 GiB.
+		dw 0x0000  ; base address=0
+		dw 0x9200  ; data read/write
+		dw 0x00cf  ; granularity=4096, 386
+.gdt_end:	assert_at .gdt+3*8  ; Must be less than .cl_magic-.start, so that the GDT doesn' get overwritten.
+.code2:		sub si, byte .here-.start  ; SI := actual offset of .start.
+		mov ax, 0xe00+'?'  ; Set up error message.
 		mov cx, cs
 		test cx, cx
 		jnz short .not_bs_protocol
@@ -232,7 +270,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov ds, cx
 		mov es, ax
 .copy_sector:	mov cx, 0x200>>1  ; Number of words in a sector.
-		mov si, 5*0x200  ; Skip over boot_sector+setup_sectors.
+		mov si, 5*0x200  ; Skip over boot_sector+setup_sectors. !!! Compare and operate with zero offset.
 		xor di, di
 		rep movsw
 		mov ax, ds
@@ -345,6 +383,10 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		jmp INITSEG:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
 .ck:		cld
 
+%ifndef MULTIBOOT  ; With Multiboot, we will do it in setup_32.
+		mov word [boot_sector.cl_offset_high_word-boot_sector], 9  ; word [0x90022]. boot_sector.cl_offset_high_word.
+%endif
+
 		; now we want to move to protected mode ... !! Consider alternatives, such as how SYSLINUX 4.07 does it or how GRUB 1 0.97 does it.
 		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed? https://wiki.osdev.org/Protected_Mode
 		out 0x70, al
@@ -403,16 +445,15 @@ alt_a20_done:
 		; Note that the short jump isn't strictly needed, althought there are
 		; reasons why it might be a good idea. It won't hurt in any case.
 		jmp short .flush_instr
-.flush_instr:	mov ax, KERNEL_DS
+.flush_instr:	mov ax, ..@KERNEL_DS
 		mov ds, ax
 		mov es, ax
-		mov ss, ax  ; This makes the stack useless, because ESP is now invalid. It's not a big problem, we set it below, and in-between we don't use it, and iterrupts are disabled.
+		mov ss, ax  ; This makes the stack useless, because ESP is now invalid. It's not a big problem, starts_32 will set it up soon, before that we don't use it, and interrupts are disabled.
 		mov fs, ax
 		mov gs, ax
-		mov esp, KERNELSEG<<4
 
 		; No need to set .cl_magic, we are not passing a command line.
-		jmp KERNEL_CS:dword (KERNELSEG<<4)
+		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+start_32-boot_sector)
 
 		; This routine checks that the keyboard command queue is empty
 		; (after emptying the output buffers)
@@ -438,38 +479,23 @@ empty_8042:	call delay
 delay:		jmp short .next
 .next:		ret
 
-; !!! Move GDT earlier (near the beginning of setup_sectors), so that it remains valid. Document it.
-gdt:		dw 0, 0, 0, 0  ; Segment 0. Null. Present because access won't work anyway: https://stackoverflow.com/a/33198311
-KERNEL_CS: equ $-gdt  ; KERNEL_CS == segment 0x8. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
-		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
-		dw 0xffff  ; limit full 4 GiB.
-		dw 0x0000  ; base address=0
-		dw 0x9a00  ; code read/exec
-		dw 0x00cf  ; granularity=4096, 386
-KERNEL_DS: equ $-gdt  ; KERNEL_DS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
-		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
-		dw 0x7fff  ; limit full 4 GiB.
-		dw 0x0000  ; base address=0
-		dw 0x9200  ; data read/write
-		dw 0x00cf  ; granularity=4096, 386
-
-.end:
-
-idt_48:		dw 0  ; idt limit=0
-		dd 0  ; idt base=0L
-
-gdt_48:		dw gdt.end-gdt-1
-		dd (INITSEG<<4)+gdt-boot_sector  ; gdt base = 0X9xxxx
+; These data bytes have to be valid only for the duration of the lgdt or lidt instruction. The table entries have to remain valid until the next lgdt or lidt instruction (i.e. long).
+idt_48:		dw 0  ; idt limit=0. We overlap idt_base (dd 0) with gdt_48 below, since limit==0.
+gdt_48:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
+		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
 
 %ifdef MULTIBOOT
 		times 4*0x200-($-setup_sectors)-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
 		assert_fofs 0xa00-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE
-multiboot:
-  .multiboot_entry:  ; If you change code below, update MULTIBOOT_STARTUP_CODE_SIZE accordingly.
+  multiboot:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
+  .entry:  ; If you change code below, update MULTIBOOT_STARTUP_CODE_SIZE accordingly.
   cpu 386
   bits 32
+		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
+		; We may not have a stack (ESP is invalid).
 		cld
-		;cmp eax, 0x2badb002  ; We ignore this signature.
+		;cmp eax, 0x2badb002  ; We ignore this Multiboot signature.
+		;xchg ebp, eax  ; EBP := multiboot signature; EAX := junk.
 
 		xor ecx, ecx  ; Empty command line by default.
 		test byte [ebx], MULTIBOOT_INFO_CMDLINE  ; multiboot_info.flags.
@@ -483,35 +509,55 @@ multiboot:
   .got_cmdline_length:  ; Now: ECX == length of the command line without the trailing NUL, ESI: address of the command line (invalid if ECX == 0).
 		mov edi, (INITSEG<<4)+0xa000-1
 		sub edi, ecx  ; TODO(pts): Abort if too long (>=0xa000-0x30), to avoid buffer overflow.
+		mov [ebx+4*4], edi  ; Change multiboot_info.cmdline back.
 		mov eax, (0xa000-1)|LINUX_CL_MAGIC<<16
 		sub eax, ecx
 		ror eax, 16  ; Swap low and high words.
 		mov [(INITSEG<<4)+boot_sector.cl_magic-boot_sector.start], eax  ; Also sets boot_sector.cl_offset.
 		rep movsb  ; Test it by passing `btrace' in the memtest86+4.01 command line. It should show the *Press any key to advance to the next trace point* message at startup.
-		mov al, 0
+		xor eax, eax
 		stosb  ; Add terminating NUL.
 
 		mov esi, OUR_MULTIBOOT_LOAD_ADDR+OUR_MULTIBOOT_STARTUP_CODE_SIZE+OUR_MULTIBOOT_HEADER_SIZE  ; Linear address of code32.
 		mov edi, KERNELSEG<<4
-		push edi
 		mov ecx, (code32.end-code32+3)>>2
 		rep movsd  ; We need this move, the memtest86+-5.x 32-bit kernel is not position-independent.
-		ret  ; Jump to KERNELSEG<<4.
 
-		times (boot_sector.start-$)&3 nop  ; Align to multiple of 4.
+		; Fall through to start_32.
   bits 16
   cpu 8086
+%endif
+
+start_32:  ; Setup registers and jump to kernel.
+cpu 386
+bits 32
+		; We assume that already IF=0 (cli) and DF=0 (cld).
+		mov word [0x90022+2], 9  ; boot_sector.cl_offset_high_word.
+		;xchg eax, ebp  ; EAX := Multiboot signature; EBP := 0.
+		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
+		mov esp, KERNELSEG<<4  ; A useful value. The Multiboot v1 specification allows any (nonworking) value in ESP.
+		sub eax, eax  ; In EFLAGS, set OF=0, SF=0, ZF=1, AF=0, PF=1 and CF=0 according to the result.
+		times 8 push eax
+		popa  ; Set EAX, EBX, ECX, EDX, ESI, EDI and EBP to 0 (but not ESP). We do it for reproducibility.
+		jmp esp  ; This works even if non-Multiboot code jumps into .setup_regs_and_jump_to_kernel.
+
+		times (boot_sector.start-$)&3 nop  ; Align to multiple of 4.
+bits 16
+cpu 8086
+
+%ifdef MULTIBOOT
 		assert_fofs 0xa00-OUR_MULTIBOOT_HEADER_SIZE
   .multiboot_align_check: times -(($-boot_sector.start)&3) nop  ; Check alignment of the .multiboot_v1 below. GRUN 1 0.97
   .multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
   .multiboot.magic: dd MULTIBOOT_MAGIC
   .multiboot.flags: dd OUR_MULTIBOOT_FLAGS
   .multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
-  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(.multiboot_entry-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot came before load_addr.
+  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(multiboot.entry-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot came before load_addr.
   .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for KERNELSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
-  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-.multiboot_entry
-  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-.multiboot_entry  ; No specific .bss to be cleared by the bootloader.
+  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot.entry
+  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot.entry  ; No specific .bss to be cleared by the bootloader.
   .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR
+  .multiboot_end:
   .multiboot_size_check: assert_at .multiboot+0x20
 %else
 		times 4*0x200-($-setup_sectors) db 0  ; !! Omit (most of) these bytes, do two `rep movsd's instead.
@@ -520,7 +566,7 @@ multiboot:
 setup_stack:  ; 0x200 bytes.
 
 code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
-		; It starts with cld, cli.
+		; It starts with cld, cli. It's not necessary, we set it up like that already.
 		incbin MEMTEST86PLUS5_BIN, 0xa00
 .end:
 
