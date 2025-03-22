@@ -159,7 +159,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		dw 0x00cf  ; granularity=4096, 386
 ..@KERNEL_DS: equ $-.gdt  ; KERNEL_DS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
 		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
-		dw 0x7fff  ; limit full 4 GiB.
+		dw 0xffff  ; limit full 4 GiB.
 		dw 0x0000  ; base address=0
 		dw 0x9200  ; data read/write
 		dw 0x00cf  ; granularity=4096, 386
