@@ -143,7 +143,8 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 .cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
 .cl_offset equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
 .cl_offset_high_word equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
-.gdt:  ; The first GDT entry (8 bytes) can contain arbitrary bytes, so we overlap it with boot code. https://stackoverflow.com/a/33198311
+.gdt:  ; The first GDT entry (segment descriptor, 8 bytes) can contain arbitrary bytes, so we overlap it with boot code. https://stackoverflow.com/a/33198311
+		; https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
 		; The GDT has to remain valid until the next lgdt instruction (potentially long), so we'll keep it at linear address 0x90000.
 .code:		cld
 		call .here
@@ -151,18 +152,12 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		jmp short .code2
 		nop  ; Padding for the first GDT entry.
 		assert_at .gdt+8  ; End if first GDT entry.
-..@KERNEL_CS: equ $-.gdt  ; KERNEL_CS == segment 0x8. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
-		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9a00, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
-		dw 0xffff  ; limit full 4 GiB.
-		dw 0x0000  ; base address=0
-		dw 0x9a00  ; code read/exec
-		dw 0x00cf  ; granularity=4096, 386
-..@KERNEL_DS: equ $-.gdt  ; KERNEL_DS == segment 0x10. https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
-		; QEMU 2.11.1 linuxboot.S has here: dw 0xffff, 0, 0x9200, 0xcf  ; Only the limit is different (it has less than full 4 GiB).
-		dw 0xffff  ; limit full 4 GiB.
-		dw 0x0000  ; base address=0
-		dw 0x9200  ; data read/write
-		dw 0x00cf  ; granularity=4096, 386
+..@KERNEL_CS: equ $-.gdt
+                dw 0xffff, 0, 0x9a00, 0xcf  ; Segment ..@KERNEL_CS == 8.    32-bit, code, read-execute, base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
+..@KERNEL_DS: equ $-.gdt
+                dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x18. 32-bit, data, read-write,   base 0, limit 4GIB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
+                ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
+                ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
 .gdt_end:	assert_at .gdt+3*8  ; Must be less than .cl_magic-.start, so that the GDT doesn' get overwritten.
 .code2:		sub si, byte .here-.start  ; SI := actual offset of .start.
 		mov ax, 0xe00+'?'  ; Set up error message.
