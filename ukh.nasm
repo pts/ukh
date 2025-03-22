@@ -18,6 +18,7 @@
 ; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01 binary.
 ; !! Instead of halting, wait for keypress and reboot.
 ; !! See how much better memtest86+-5.01.bin compresses (uncompressed size is about 32 KiB larger).
+; !! Simplfy jumps in upxbc --flat32 decompress and lxunfilter functions.
 ;
 ; The Universal Kernel Header (UKH) emitted by this file supports multiple load protocols:
 ;
