@@ -355,7 +355,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		; The system will move itself to its rightful place.
 		; reload the segment registers and the stack since the
 		; APs also execute this code
-		mov ax, INITSEG
+		mov ax, cs  ; INITSEG.
 		mov ds, ax
 		mov es, ax
 		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
