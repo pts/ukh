@@ -359,7 +359,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov ds, ax
 		mov es, ax
 		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
-		mov esp, setup_stack+0x200-boot_sector  ; 0x200+0xa00-0x24 bytes of stack. We set ESP because we'd need all 32 bits of it in protected mode. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
+		mov sp, setup_stack+0x200-boot_sector  ; 0x200+0xa00-0x24 bytes of real-mode stack. We need only a few bytes below for calls. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
 		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
 		lidt [idt_48-boot_sector]  ; load idt with 0,0
 		lgdt [gdt_48-boot_sector]  ; load gdt with whatever appropriate
@@ -409,9 +409,10 @@ alt_a20_done:
 .flush_instr:	mov ax, KERNEL_DS
 		mov ds, ax
 		mov es, ax
-		mov ss, ax
+		mov ss, ax  ; This makes the stack useless, because ESP is now invalid. It's not a big problem, we set it below, and in-between we don't use it, and iterrupts are disabled.
 		mov fs, ax
 		mov gs, ax
+		mov esp, KERNELSEG<<4
 
 		; No need to set .cl_magic, we are not passing a command line.
 		jmp KERNEL_CS:dword (KERNELSEG<<4)
