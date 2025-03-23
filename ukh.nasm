@@ -109,7 +109,7 @@ OUR_MULTIBOOT_LOAD_ADDR equ 0x100000  ; The minimum value is 0x100000 (1 MiB), o
 OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 
 KERNELSEG equ 0x1000
-INITSEG equ 0x9000  ; We assume that 5*0x200 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
+INITSEG equ 0x9000  ; We assume that 0xa00 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
 BOOT_ENTRY_ADDR equ 0x7c00
 
 LOADFLAG_READ:
@@ -121,7 +121,7 @@ LOADFLAG_READ:
 		jmp short %%back
 %endm
 
-; With the Linux kernel protocols, the bootloader loads the first 5*0x200
+; With the Linux kernel protocols, the bootloader loads the first 0xa00
 ; bytes (boot_sector and setup_sectors) to INITSEG<<4 (== 0x90000), the rest
 ; (code32) to KERNELSEG<<4 (== 0x10000) and jumps to 0x9020:0
 ; (setup_sectors) in real mode.
@@ -229,16 +229,16 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
-		; Copy 5*0x200 bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
+		; Copy 0xa00 bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
 		xor si, si
 		xor di, di
-		mov cx, (5*0x200)>>1  ; Number of words to copy.
+		mov cx, 0xa00>>1  ; Number of words to copy.
 		rep movsw
 		jmp INITSEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to KERNELSEG). Needed for the NTLDR load protocol.
 .initseg_const equ $-2
 .after_far_jmp:
 
-		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+5*0x200
+		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+0xa00
 		; == 0x8600 to KERNELSEG<<4 == 0x10000. Copy them in
 		; reverse, because they may overlap.
 		;
@@ -248,8 +248,9 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		mov cx, ds
+		add cx, strict word 0xa00>>4  ; Skip over boot_sector+setup_sectors. !! Remove `strict word' if it becomes smaller.
 		mov ax, KERNELSEG
-		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus (5*0x200)>>4; AX == KERNELSEG.
+		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus 0xa00>>4; AX == KERNELSEG.
 		cmp cx, ax
 		jae .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
 .setup_backward_copy:  ; Copy them in backward (descending), because the destination comes after the source, and they may overlap.
@@ -261,13 +262,13 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		;mov dx, 0x200>>4  ; Already set.
 		;mov ax, KERNELSEG  ; Already set. AX := segment of first destination sector.
 		;mov es, ax  ; Already set. ES := segment of first destination sector.
-		;add cx, 0 ; Already set. CX := segment of first source sector (with offset 0 it points to code32), minus (5*0x200)>>4.
-		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to code32), minus (5*0x200)>>4.
+		;add cx, 0 ; Already set. CX := segment of first source sector (with offset 0 it points to code32), minus 0xa00>>4.
+		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to code32), minus 0xa00>>4.
 .after_setup_copy:
 		mov ds, cx
 		mov es, ax
 .copy_sector:	mov cx, 0x200>>1  ; Number of words in a sector.
-		mov si, 5*0x200  ; Skip over boot_sector+setup_sectors. !!! Compare and operate with zero offset.
+		xor si, si
 		xor di, di
 		rep movsw
 		mov ax, ds
