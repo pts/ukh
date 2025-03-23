@@ -47,6 +47,7 @@
 ;
 ; * !! floppy without filesystem: Make the boot_sector read the rest of the file from floppy image, using `qemu-system-i386 -fda'. QEMU 2.11.1 detects floppy geometry using the image file size, and falls back to a prefix of 144OK (C*H*S == 80*2*18). See also: https://retrocomputing.stackexchange.com/q/31431 . See also RaWrite 1.3 autodetection (https://ridl.cfd.rit.edu/products/manuals/sunix/scsi/2203/html/RAWRITE.HTM), memtest86+-5.01 autodetection, Linux kernel floppy boot code autodetection.
 ; * !! DOS MZ .exe, just to report that this is a kernel file which cannot be executed in DOS
+; * !! bootable CD (what are the options for preloading? or does it have to load emulated floppy sectors)?
 ; * UEFI PE .exe: The latest memtest86+ (>=7.20) supports it: https://github.com/memtest86plus/memtest86plus/blob/a10664a2515a81b07ab8ae999f91e8151a87eec6/boot/x86/header.S#L798-L824
 ; * MS-DOS and Windows 95--98--ME io.sys: The boot sector loads only the first 3 (MS-DOS --6.22) or 4 sectors of *io.sys*. Also a file named *msdos.sys* must be present for MS-DOS --6.22 boot code.
 ;   * MS-DOS v6: MS-DOS 3.30--6.22, IBM PC DOS 3.30--6.x. IBM PC DOS 7.0--7.1 is almost identical. This loads only the first 3 sectors of the *io.sys* or *ibmbio.com* file, passing some info on how to find the rest, jumps to 0x70:0. It passes some info in registers and memory.
@@ -70,6 +71,14 @@
 ; * The initial GDT is stored as 0x18 bytes at linear address 0x90000.
 ; * The bottom 16 bits of CR0 (i.e. the MSW) is 0x0001 (bit 0 PE is 1, the high 15 bits are 0).
 ; * The BIOS drive number (or 0xff if unknown) is available at byte [0x90007]. It is unknown for the Linux load protocol, unknown for Multiboot via QEMU (unused, QEMU recognizes Linux first), known for Multiboot via GRUB, and known for chain.
+;
+; Limitations of UKH:
+;
+; * No UEFI support, it can boot using only PC BIOS (legacy). No secure boot support.
+; * No booting from CD (.iso image) yet.
+; * Maximum kernel file size (excluding the boot sector and the setup sectors) is 512 KiB, maximum kernel code, data and uninitialized data size is 512 KiB total.
+; * Only i386+ 32-bit protected mode kernels supported. No support for switching to long mode (64-bit, amd64, x86_64). No support for earlier Intel CPUs (such as 8086, 186, 286).
+; * No support for architectures other than Intel (e.g. ARM, RISC-V, PowerPC, m68k).
 ;
 ; SYSLINUX 4.07 supports these file formats:
 ;
