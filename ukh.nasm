@@ -389,14 +389,15 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x226
 .linux_boot_header.end:
 
+cpu 386
 
-  cpu 386
-
-  .kernel_version_string: db 'memtest86+-5.01', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes). !! Make this configurable.
-  %if $-.start<0x30
+; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
+.kernel_version_string: db 'memtest86+-5.01', 0  ; !! Make this configurable. !! Pad it.
+%if $-.start<0x30
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
-  %endif
-  .code:  ; The entry point jumps here.
+%endif
+
+.code:  ; The 16-bit Linux entry point jumps here from setup_sectors.start.
 
 %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
@@ -405,7 +406,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 %endif
 
 		cli ; no interrupts allowed
-		mov word [cs:jmp_offset-setup_sectors], ((INITSEG<<4)&0xffff)+linux_entry-boot_sector
+		mov word [cs:.jmp_offset-setup_sectors], ((INITSEG<<4)&0xffff)+linux_entry-boot_sector
 		jmp INITSEG:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
 .ck:		cld
 
@@ -430,47 +431,9 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
 		;lidt [idt_48-boot_sector]
-		lgdt [gdt_48-boot_sector]  ; load gdt with whatever appropriate
-
-%if 1  ; !! What is the best way to enable the A20 gate? Look at GRUB 1 0.97, GRUB4DOS, SYSLINUX 0.47.
-		; that was painless, now we enable A20
-		; start from grub-a20.patch
-		;
-		; try to switch gateA20 using PORT92, the "Fast A20 and Init"
-		; register
-		mov dx, 0x92
-		in al, dx
-		; skip the port92 code if it's unimplemented (read returns 0xff)
-		cmp al, 0xff
-		jz short alt_a20_done
-
-		; set or clear bit1, the ALT_A20_GATE bit
-		mov ah, [esp+4]  ; !!! Where does this come from? Who puts this value to ESP? It is surely incorrect.
-		test ah, ah
-		jz short alt_a20_cont1
-		or al, 2
-		jmp short alt_a20_cont2
-alt_a20_cont1:
-		and al, ~2
-
-		; clear the INIT_NOW bit; don't accidently reset the machine
-alt_a20_cont2:
-		and al, ~1
-		out dx, al
-
-alt_a20_done:
-		; end from grub-a20.patch
-		call empty_8042
-
-		mov al, 0xd1  ; command write
-		out 0x64, al
-		call empty_8042
-
-		mov al, 0xdf  ; A20 on
-		out 0x60, al
-		call empty_8042
-%endif
-
+		lgdt [.gdt_48-boot_sector]  ; load gdt with whatever appropriate
+		mov al, 1  ; A20 gate direction: enable.
+		call .a20_gate  ; Enable the A20 gate.
 		mov ax, 1  ; protected mode (PE) bit
 		lmsw ax
 		;mov eax, cr0  ; !! Why does lmsw work here but not when switching back to real mode?
@@ -489,36 +452,90 @@ alt_a20_done:
 
 		; No need to set .cl_magic, we are not passing a command line.
 		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+chain_entry-boot_sector)  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
-jmp_offset: equ $-6
-
-		; This routine checks that the keyboard command queue is empty
-		; (after emptying the output buffers)
-		;
-		; No timeout is used - if this hangs there is something wrong with
-		; the machine, and we probably couldn't proceed anyway.
-empty_8042:	call delay
-		in al, 0x64  ; 8042 status port
-		cmp al, 0xff  ; from grub-a20-patch, skip if not impl
-		je short .ret
-		test al, 1  ; output buffer?
-		jz short .no_output
-		call delay
-		in al, 0x60  ; read it
-		jmp short empty_8042
-.no_output:	test al, 2  ; is input buffer full?
-		jnz short empty_8042  ; yes - loop
-.ret:		ret
-
-;
-; Delay is needed after doing i/o
-;
-delay:		jmp short .next
-.next:		ret
+.jmp_offset: equ $-6
 
 ; These data bytes have to be valid only for the duration of the lgdt or lidt instruction. The table entries have to remain valid until the next lgdt or lidt instruction (i.e. long).
-idt_48:		dw 0  ; idt limit=0. We overlap idt_base (dd 0) with gdt_48 below, since limit==0.
-gdt_48:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
+.gdt_48:	dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
+
+; Enables (AL == 1, no wraparound at 1 MiB) or disables (AL == 0, wraparound
+; at 1 MiB) the A20 gate. Must be called in real mode (because it calls an
+; interrupt: int 15h). Ruins: AX, CX, DX.
+;
+; int 15h (AX == 0x2400: disable A20 gate; AX == 0x2401: enable A20 gate)
+; documentation: https://fd.lod.bz/rbil/interrup/bios_vendor/152400.html and
+; https://fd.lod.bz/rbil/interrup/bios_vendor/152401.html
+;
+; This routine is probably overconservative in what it does, but so what?
+; It may also eats keystrokes in the keyboard buffer.
+;
+; Based on gateA20 in src/asm.S in GRUB 1 0.97-29ubuntu68. The
+; implementation in GRUB4DOS is way too long. Maybe SYSLINUX 4.07 has
+; something useful.
+;
+; It must be called with interrupts disabled, to prevent interference with
+; the keyboard controller.
+;
+; !! TODO(pts): Replace the logic with http://wiki.osdev.org/A20_Line#Final_code_example .
+.a20_gate:  ; First, try the BIOS int 15h call.
+.try_int15h:	cmp al, 1  ; CF := is_zero(AL).
+		mov ax, 0x2401
+		sbb al, 0  ; AX := 0x2400 if DL is 0 (disable), otherwise 0x2401 (enable).
+		push ax  ; Save direction.
+		stc
+		int 0x15
+		pop dx  ; Restore CL := direction; CH := 0x24.
+		jc short .try_port92h  ; Jump on failure.
+		test ah, ah
+		jne short .try_port92h  ; Jump on failure.
+		ret  ; This works for QEMU 2.11.1.
+.try_port92h:  ; Try to switch gateA20 using PORT92, the "Fast A20 and Init" register.
+		mov ah, dl  ; AH := direction.
+		mov dx, 0x92
+		mov al, 0xff  ; !! Is this needed before an `in'?
+		in al, dx
+		cmp al, 0xff
+		jz short .try_keyboard  ; Skip the port92 code if it's unimplemented (read returns 0xff).
+		test cl, cl
+		jz short .ga87
+		or al, 2  ; Set the ALT_A20_GATE bit.
+		jmp short .ga89
+.ga87:		and al, ~2  ; Clear the ALT_A20_GATE bit.
+.ga89:		and al, ~1  ; Clear the INIT_NOW bit, so that we don't accidently reset the machine.
+		out dx, al
+		; Use the keyboard controller method anyway. !! Why? (Maybe because for disabling we need both.) https://stackoverflow.com/q/79529680
+.try_keyboard:  ; Use the keyboard controller.
+		call .gloop1
+		mov al, 0xd1  ; KC_CMD_WOUT.
+		out 0x64, al  ; K_CMD.
+.gloopint1:	in al, 0x64  ; K_STATUS.
+		cmp al, 0xff
+		jz short .gloopint1_done
+		and al, 2  ; K_IBUF_FULL.
+		jnz short .gloopint1
+.gloopint1_done:
+		mov al, 0xdd  ; KB_OUTPUT_MASK.
+		test ah, ah
+		jz short .after_enable
+		or al, 2  ; KB_A20_ENABLE.
+.after_enable:	out 0x60, al  ; K_RDWR.
+		call .gloop1
+		mov al, 0xff
+		out 0x64, al  ; K_CMD.
+		call .gloop1
+		ret
+.gloop1:	in al, 0x64  ; K_STATUS.
+		cmp al, 0xff
+		jz short .gloop2ret
+		and al, 2  ; K_IBUF_FUL.
+		jnz short .gloop1
+.gloop2:	in al, 0x64  ; K_STATUS.
+		and al, 1  ; K_OBUF_FUL.
+		jz short .gloop2ret
+		in al, 0x60  ; K_RDWR.
+		jmp short .gloop2
+.gloop2ret:	ret
+
 
 %ifdef MULTIBOOT
 		times BXS_SIZE-($-boot_sector)-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
