@@ -26,6 +26,7 @@ fi
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs stage2.nasm
 #nasm-0.98.39 -O0 -w+orphan-labels -f bin -DPATCH -o grub1.bs stage2.nasm
 
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMULTIBOOT -o real2.multiboot.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -o memtest86+.kernel.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -DMULTIBOOT -o memtest86+.multiboot.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist-lzma.bin'" -o memtest86+.lzma.kernel.bin ukh.nasm
@@ -46,6 +47,7 @@ truncate -s 1440K fd1440k.bin
 
 rm -f liigboot.zip
 cp -a liigboot.zip.orig liigboot.zip
+mcopy -bsomp -i liigboot.zip real2.multiboot.bin ::R.K
 mcopy -bsomp -i liigboot.zip memtest86+.nrv.kernel.bin ::M.MB  # Also multiboot.
 mcopy -bsomp -i liigboot.zip memtest86+.kernel.bin ::M.K
 mcopy -bsomp -i liigboot.zip memtest86+.lzma.kernel.bin ::ML.K  # Not multiboot, just for testing.

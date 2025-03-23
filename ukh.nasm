@@ -65,6 +65,7 @@
 ; * If there was a kernel command line, word [0x90020] is set to 0xa33f, and dword [0x90022] points to the command line (NUL-terminated byte string).
 ;   This is compatible with Linux kernel load protocol <=2.01, in which the pointer value is 0x90000 + word [0x90022].
 ; * The initial GDT is stored as 0x18 bytes at linear address 0x90000.
+; * The bottom 16 bits of CR0 (i.e. the MSW) is 0x0001 (bit 0 PE is 1, the high 15 bits are 0).
 ;
 ; SYSLINUX 4.07 supports these file formats:
 ;
@@ -155,7 +156,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 ..@KERNEL_CS: equ $-.gdt
                 dw 0xffff, 0, 0x9a00, 0xcf  ; Segment ..@KERNEL_CS == 8.    32-bit, code, read-execute, base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
 ..@KERNEL_DS: equ $-.gdt
-                dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x18. 32-bit, data, read-write,   base 0, limit 4GIB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
+                dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x18. 32-bit, data, read-write,   base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
                 ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
                 ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
 .gdt_end:	assert_at .gdt+3*8  ; Must be less than .cl_magic-.start, so that the GDT doesn' get overwritten.
@@ -352,16 +353,8 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x226
 .linux_boot_header.end:
 
-%ifdef MEMTEST86PLUS5  ; Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.
-  %ifndef MEMTEST86PLUS5_BIN
-    %define MEMTEST86PLUS5_BIN  'memtest86+-5.01-dist.bin'  ; Works. ~150 KiB.
-    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.01.bin'  ; Works. Ubuntu. ~182 KiB. Larger probably because of different C compiler or flags.
-    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.31b-dist.bin'  ; Works.
-  %endif
 
   cpu 386
-
-  base: equ setup_sectors
 
   .kernel_version_string: db 'memtest86+-5.01', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes). !! Make this configurable.
   %if $-.start<0x30
@@ -383,9 +376,11 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov word [boot_sector.cl_offset_high_word-boot_sector], 9  ; word [0x90022]. boot_sector.cl_offset_high_word.
 %endif
 
+%if 1  ; !! What's wroong if we don't bother with NMI?
 		; now we want to move to protected mode ... !! Consider alternatives, such as how SYSLINUX 4.07 does it or how GRUB 1 0.97 does it.
 		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed? https://wiki.osdev.org/Protected_Mode
 		out 0x70, al
+%endif
 
 		; The system will move itself to its rightful place.
 		; reload the segment registers and the stack since the
@@ -396,9 +391,11 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
 		mov sp, setup_stack+0x200-boot_sector  ; 0x200+0xa00-0x24 bytes of real-mode stack. We need only a few bytes below for calls. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
 		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
-		lidt [idt_48-boot_sector]  ; load idt with 0,0  !! Why set it at to empty at all? QEMU 2.11.1 doesn't set it. https://stackoverflow.com/q/79526862 https://stackoverflow.com/a/5128933
+		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
+		;lidt [idt_48-boot_sector]
 		lgdt [gdt_48-boot_sector]  ; load gdt with whatever appropriate
 
+%if 1  ; !! What is the best way to enable the A20 gate? Look at GRUB 1 0.97, GRUB4DOS, SYSLINUX 0.47.
 		; that was painless, now we enable A20
 		; start from grub-a20.patch
 		;
@@ -411,7 +408,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		jz short alt_a20_done
 
 		; set or clear bit1, the ALT_A20_GATE bit
-		mov ah, [esp+4]  ; !!! Where does this come from? Who puts this value to ESP?
+		mov ah, [esp+4]  ; !!! Where does this come from? Who puts this value to ESP? It is surely incorrect.
 		test ah, ah
 		jz short alt_a20_cont1
 		or al, 2
@@ -435,10 +432,15 @@ alt_a20_done:
 		mov al, 0xdf  ; A20 on
 		out 0x60, al
 		call empty_8042
+%endif
 
-		mov ax, 0x0001  ; protected mode (PE) bit
+		mov ax, 1  ; protected mode (PE) bit
 		lmsw ax
-		; Note that the short jump isn't strictly needed, althought there are
+		;mov eax, cr0  ; !! Why does lmsw work here but not when switching back to real mode?
+		;or al, 1  ; PE := 1.
+		;mov cr0, eax
+
+		; Note that the short jump isn't strictly needed, although there are
 		; reasons why it might be a good idea. It won't hurt in any case.
 		jmp short .flush_instr
 .flush_instr:	mov ax, ..@KERNEL_DS
@@ -561,72 +563,68 @@ cpu 8086
 		assert_fofs 0xa00
 setup_stack:  ; 0x200 bytes.
 
-code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
+code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to (KERNELSEG<<4) == 0x10000.
+cpu 386
+bits 32
+
+%ifdef MEMTEST86PLUS5  ; Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.
+  %ifndef MEMTEST86PLUS5_BIN
+    %define MEMTEST86PLUS5_BIN  'memtest86+-5.01-dist.bin'  ; Works. ~150 KiB.
+    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.01.bin'  ; Works. Ubuntu. ~182 KiB. Larger probably because of different C compiler or flags.
+    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.31b-dist.bin'  ; Works.
+  %endif
 		; It starts with cld, cli. It's not necessary, we set it up like that already.
 		incbin MEMTEST86PLUS5_BIN, 0xa00
-.end:
-
 %else
-  .kernel_version_string: db 'kernel1', 0  ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
-		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
-  .char:	db 'k'  ; Preserved.
-  .code:	; QEMU 2.11.1 sets DL=0, no way to communicate the BIOS boot drive number (root device). !! try root=? !! What does GRUB 1 pass?
-		; These are already set by QEMU 2.11.1, GRUB 1 0.97 and SYSLINUX 4.07.
-		;mov ax, 0x9000
-		;mov ds, ax
-		;mov es, ax
-		;mov ss, ax
-		jmp 0x9000:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
-  .ck:		cld
-		sti
-		mov ax, 0xe00 + 'e'
-		xor bx, bx
-		int 0x10  ; Print character AL to console.
+  bits 32
+  .back_to_real:  ; Switch back from protected mode to real mode. Code based on prot_to_real in stage2/asm.S in GRUB 1 0.97-29ubuntu68
+		;cli  ; Not needed, already done.
+		;mov esp, KERNELSEG<<4   ; Not needed, it already has this value. The value will be useful as SS:SP in real mode as well.
+		;lgdt [.real_gdtr+((KERNELSEG<<4)-code32)]  ; Equivalent but longer than below. This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment.
+		lgdt [byte esp+.real_gdtr-code32]  ; This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment. Without -code32 and byte it actually happens to work, because KERNELSEG<<4 is a multiple of 0x100.
+		dw 0xea66, 0, .RM_REAL1_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
+  .real_gdt: equ $-8  ; Arbitrary values in the first segment descriptor.
+  .RM_REAL1_CS: equ $-.real_gdt
+  ;.real1_linear: equ (INITSEG<<4)+.real1-boot_sector  ; Linear address of .real1, as a NASM number (not label-based).
+		dw 0xffff, code32.real1_linear&0xffff, 0x9e00|((code32.real1_linear>>16)&0xff), 0x8f|((code32.real1_linear>>24)&0xff)<<8  ; Segment .RM_CS == 8. 16-bit, code, read-execute, base .real1, limit 4GiB-1, granularity 0x1000.
+  .real_gdt.end:
+  .real_gdtr:	dw .real_gdt.end-.real_gdt-1  ; GDT limit.
+		dd .real_gdt+((KERNELSEG<<4)-code32)  ; GDT base.
 
-		mov ax, 0x1000
+  .tmp_real1:  ; Now we are still in protected mode, but all segment registers point to 16-bit segments.
+  .real1_linear: equ (KERNELSEG<<4)+code32.tmp_real1-code32  ; Linear address of code32.tmp_real1, as a NASM number (not label-based).
+  bits 16  ; CS points to a 16-bit segment.
+		mov eax, cr0
+		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
+		mov cr0, eax
+		xor eax, eax
+		xor esp, esp  ; This is needed (after .now_real) for subsequent QEMU 2.11.1 (and SeaBIOS) int 10h calls (but not for int 16h or int 19h), `mov sp 0' is no enough. This may be a limitation of SeaBIOS.
+		;lmsw ax  ; BUGFIX: This doesn't work instead of modifyingc CR0, .tmp_real2 won't be reached. Why? (Ask on stackoverflow.com.)
+		;o32 jmp KERNELSEG:dword .tmp_real2-code32  ; 8 bytes: 2 opcode, 4 offset, 2 segment.
+		jmp KERNELSEG:.tmp_real2-code32  ; 5 bytes: 1 opcode, 2 offset, 2 segment. !! This only works if .tmp_real2 is close to the beginning of code32.
+  .tmp_real2:  ; We are in real mode now.
+		;xor ax, ax  ; No need, AX is already 0.
+		mov ds, ax
 		mov es, ax
-		mov al, [es:0]  ; 'T' in code32.
-		mov ah, 0xe
-		xor bx, bx
-		int 0x10  ; Print character AL to console.
+		mov fs, ax
+		mov gs, ax
+		mov ss, ax
 
-		xor bx, bx
-		mov ah, 0xe
-		mov al, [.char]  ; 'C'.
-		int 0x10
-		mov al, [.sector1]  ; '1'.
-		int 0x10  ; Print character AL to console.
-		mov al, [.sector2]  ; '2'.
-		int 0x10  ; Print character AL to console.
-		mov al, [.sector3]  ; '3'.
-		int 0x10  ; Print character AL to console.
-		cmp word [boot_sector.cl_magic], LINUX_CL_MAGIC
-		jne .halt
-		;mov al, [0xa001]
-		mov si, [boot_sector.cl_offset]
-  .next:	lodsb
-		test al, al
-		jz short .printed
-		int 0x10  ; Print character AL to console.
-		jmp short .next
-  .printed:	mov al, '.'
-		int 0x10
+		mov bx, 0xb800
+		mov es, bx
+		mov word [es:2], 0x1700|'Q'  ; Write just after the top left corner to the text screen. It works.
 
-  .halt:	halt
-
-		times 0x200-($-.start) db 0
-  .sector1:	db '1'
-		times 0x200-($-.sector1) db 0
-  .sector2:	db '2'
-		times 0x200-($-.sector2) db 0
-  .sector3:	db '3'
-		times 0x200-($-.sector3) db 0
-		assert_fofs 0xa00
-
-code32:		; (Should be) 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to 0x10000.
-		db 'T'
-.end:
+		sti
+  .now_real:  ; Real-mode kernel entry point CS=0x1000, AX=0, DS=ES=FS=GS=SS=0, SP=0 (stack available between 0x600 and 0x10000), IF=1 (sti).
+		mov ax, 0xe00+'r'
+		xor bx, bx  ; Set up printing.
+		int 0x10  ; Print character in AL. !! Strange: changes the video mode instead in QEMU. Why
+		xor ax, ax
+		int 0x16  ; Wait for user keypress. Works.
+		int 0x19  ; Reboot.
+		; !! Disable the A20 gate. What does GRUB 1 0.97 do?
 %endif
+.end:
 		%if code32.end==code32
 		  %error FATAL_EMPTY_CODE32
 		  times -1 nop
