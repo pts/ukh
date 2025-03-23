@@ -1,5 +1,5 @@
 ;
-; ukh.nasm: Universal Kernel Header (UKH) for memtest86+-5.01
+; ukh.nasm: Universal Kernel Header (UKH)
 ; by pts@fazekas.hu at Mon Mar 17 13:45:39 CET 2025
 ;
 ; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -o memtest86+.kernel.bin ukh.nasm
@@ -19,10 +19,18 @@
 ; !! Instead of halting, wait for keypress and reboot.
 ; !! See how much better memtest86+-5.01.bin compresses (uncompressed size is about 32 KiB larger).
 ; !! Simplfy jumps in upxbc --flat32 decompress and lxunfilter functions.
+; !! Make UKH a few bytes shorter than 2 sectors, not aligning code32 to a multiple of 0x200.
 ;
-; The Universal Kernel Header (UKH) emitted by this file supports multiple load protocols:
+; The Universal Kernel Header (UKH) is a 1024-byte header that can be added
+; in front of i386+ 32-bit protected mode kernel images to make them
+; bootable using a multitude of bootloaders (hence the qualifier
+; *universal*). Currently the type of kernel support is limited, the first
+; one that was made work is memtest86+-5.01.
 ;
-; * Linux: In our supported version (2.01 and earlier, 5 sectors hardcoded), load first 5 sectors (5*0x200 == 0xa00 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230 read and/or written by the bootloader, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
+; The Universal Kernel Header (UKH) supports multiple load protocols:
+;
+; * Linux: In our supported version, load first 2 sectors (2*0x200 == 0x400 bytes) to 0x90000, load remaining sectors to 0x10000, don't store the the BIOS drive number anywhere, jump to 0x:9020:0 (file offset 0x200). There are some Linux-specific header fields in file offset range 0x1f1...0x230 read and/or written by the bootloader, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
+;   * Actually, the Linux load protocol (2.01 and earlier) loads 5 sectors (number hardcoded to the old Linux load protocol) to 0x90000 and the remaining sectors to 0x10000, but to avoid waste 3 sectors worth of space, UKH will move 0x10000 3 sectors later, and then it copy over 3 sectors from 0x90000+2*0x200 to 0x10000.
 ;   * Subtype Linux kernel old (<2.00) protocol: It doesn't check for the `HdrS` header at file offset 0x202. It always loads 5 sectors. Very old Linux bootloaders can load this, but not version 2.00 or 2.01.
 ;   * Subtype Linux kernel protocol version 2.01 (also applies to 2.00): This implementation simulates the old protocol, but specifies more headers so that QEMU 2.11.1 is able to load it with `qemu-system-i386 -kernel`. There are some Linux-specific header fields in file byte range 0x1f1...0x230, including BOOT_SIGNATURE. It can receive a command line. Specification: https://docs.kernel.org/arch/x86/boot.html
 ;   * Bootloaders supported: GRUBs (non-UEFI GRUB 2, GRUB 1 (GRUB Legacy), GRUB4DOS) with the *kernel* command (but GRUBs will use Multiboot instead if Multiboot was enabled at UKH compilation time; practically both work, but Multiboot also passes the BIOS drive number); SYSLINUX (and ISOLINUX and PXELINUX) with the *linux* command (or with the *kernel* command, but with a filename extension other than .com, .cbr, .c32, .img, .bss, .bin, .bs, .0); QEMU `qemu-system-i386 -kernel`; loadlin; LILO, and possibly others. The GRUBs recognize it as Multiboot first (if compiled with -DMULTIBOOT) rather than Linux.
@@ -34,7 +42,7 @@
 ;   * Subtype EDR-DOS (EDR-DOS 7.01.07--7.01.08 *drbio.sys*): load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0. Maximum file size, limited by the EDR-DOS boot sector: 134.5 KiB.
 ;   * Subtype DR-DOS (EDR-DOS 7.01.01--7.01.06 *ibmbio.com*, DR-DOS --7.0--7.01--7.02--7.03--7.05 *ibmbio.com*): They use the same load protocol as EDR-DOS (but with filename *ibmbio.com*), but the boot maximum kernel size its boot sector supports is 29 KiB (way too small for memtest86+), with its *ibmbio.com* being <24.25 KiB.
 ;   * Subtype NTLDR (Windows NTLDR *ntldr* and GRUB4DOS bootlace.com *grldr*): Load at least first 0x24 bytes (.hidden_sector_count or the entire 0x24 byte substring, see https://retrocomputing.stackexchange.com/a/31399) of the boot partition (boot sector) to 0x7c00, load kernel file to 0x20000, set DL to the BIOS drive number, jump to 0x2000:0. No header fields used. The GRUB4DOS boot sector (installed with *bootlace.com*) uses the same protocol, looking for kernel file *grldr* rather than *ntldr*.
-;   * Bootloaders supported: non-UEFI GRUB 2 and GRUB4DOS (but not GRUB 1, because it loads only 512 bytes) with the *chainloader* command, SYSLINUX (and ISOLINUX and PXELINUX) with the *boot* command (or with the *kernel* command and a filename extensions .bin, .bs and .0); PXE network boot 2.0 and 2.1 (with small kernel file size limit), PXE network boot >=2.2; FreeDOS boot sector with filename *kernel.sys*; SvarDOS boot sector with filename *kernel*.sys*; EDR-DOS >=7.01.07 boot sector with filename *drbio.sys*; DR-DOS boot sector with filename *ibmbio.com*; Windows NT 3.1--3.5--3.51--4.0 boot sector with filename *ntldr*; Windows 2000--XP boot sector with filename *ntldr*; maybe Windows Vista-- boot sector with filename *bootmgr* (untested); * NTLDR from Windows NT boot.ini (`C:\NTLDR="label"`): maximum file size is 8 KiB, because it loads only the first 16 sectors (0x2000 bytes) of the *ntldr* file, otherwise the same as the supported NTLDR above.
+;   * Bootloaders supported: non-UEFI GRUB 2 and GRUB4DOS (but not GRUB 1, because it loads only 512 bytes) with the *chainloader* command, SYSLINUX (and ISOLINUX and PXELINUX) with the *boot* command (or with the *kernel* command and a filename extensions .bin, .bs and .0); PXE network boot 2.0 and 2.1 (with small kernel file size limit), PXE network boot >=2.2; FreeDOS boot sector with filename *kernel.sys*; SvarDOS boot sector with filename *kernel*.sys*; EDR-DOS >=7.01.07 boot sector with filename *drbio.sys*; DR-DOS boot sector with filename *ibmbio.com*; Windows NT 3.1--3.5--3.51--4.0 boot sector with filename *ntldr*; Windows 2000--XP boot sector with filename *ntldr*; maybe Windows Vista-- boot sector with filename *bootmgr* (untested); * NTLDR from Windows NT boot.ini (`C:\NTLDR="label"`): maximum file size is 8 KiB, because it loads only the first 16 sectors (0x2000 == 8192 bytes) of the *ntldr* file, otherwise the same as the supported NTLDR above.
 ; * Multiboot: It works according to the Multiboot v1 specification. It switches immediately to i386 32-bit protected mode. No code is run in real mode unless the kernel explicitly switches back to real mode. It can receive both command line and BIOS drive number, which is populated by GRUBs, but not QEMU 2.11.1. SYSLINUX supports it only with its *mboot.c32* file. Specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 ;   * With Multiboot v1, the kernel command line (passed in the Multiboot info struct) is respected. Test it by passing *btrace* to memtest86+-5.01 (will show the *Press any key to advance to the next trace point* message at startup) from GRUB: `kernel /m.mb btrace` and `boot`.
 ;   * To disable Multiboot support in UKH, compile it without the `-DMULTIBOOT` NASM flag. (To enable it, compile it with the flag.)
@@ -117,12 +125,13 @@ MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
 MULTIBOOT_INFO_CMDLINE equ 1<<2
 OUR_MULTIBOOT_FLAGS equ MULTIBOOT_FLAG_AOUT_KLUDGE
-OUR_MULTIBOOT_STARTUP_CODE_SIZE equ 0x60
+OUR_MULTIBOOT_STARTUP_CODE_SIZE equ 0x84
 OUR_MULTIBOOT_LOAD_ADDR equ 0x100000  ; The minimum value is 0x100000 (1 MiB), otherwise GRUB 1 0.97 fails with: Error 7: Loading below 1MB is not supported
 OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 
+BXS_SIZE equ 0x400  ; Total size of boot sector and setup sectors.
 KERNELSEG equ 0x1000
-INITSEG equ 0x9000  ; We assume that 0xa00 bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
+INITSEG equ 0x9000  ; We assume that BXS_SIZE bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
 BOOT_ENTRY_ADDR equ 0x7c00
 
 LOADFLAG_READ:
@@ -165,7 +174,7 @@ LOADFLAG_READ:
 ; * The FreeDOS (checked versions 1.0--1.1--1.2--1.3) and SvarDOS (checked version 20240915) boot sector passes it in both BL and DL (DL is unnecessary).
 ; * The FreeDOS (checked version 1.3) kernel gets it from BL.
 ; * The SvarDOS (checked version 20240915) gets it from BL if the initial CS is 0x60 (FreeDOS load protocol), and from DL if the initial CS is 0x70 (DR-DOS load protocol).
-boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 5 sectors (0xa00 bytes).
+boot_sector:  ; 1 sector of 0x200 bytes.
 .start:
 .cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
 .cl_offset equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
@@ -177,7 +186,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		call .here
 .here:		pop si  ; SI := actual offset of .here.
 		jmp short .code2
-		nop  ; Padding for the first GDT entry.
+.drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 		assert_at .gdt+8  ; End if first GDT entry.
 ..@KERNEL_CS: equ $-.gdt
                 dw 0xffff, 0, 0x9a00, 0xcf  ; Segment ..@KERNEL_CS == 8.    32-bit, code, read-execute, base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
@@ -255,18 +264,17 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
-		; Copy 0xa00 bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
+		; Copy BXS_SIZE bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
 		xor si, si
 		xor di, di
-		mov cx, 0xa00>>1  ; Number of words to copy.
+		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
 		rep movsw
 		jmp INITSEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to KERNELSEG). Needed for the NTLDR load protocol.
 .initseg_const equ $-2
 .after_far_jmp:
 
-		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+0xa00
-		; == 0x8600 to KERNELSEG<<4 == 0x10000. Copy them in
-		; reverse, because they may overlap.
+		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+BXS_SIZE
+		; == 0x8000 to KERNELSEG<<4 == 0x10000.
 		;
 		; We copy one sector (0x200) bytes at a time. This is
 		; arbitrary. But we can't copy in one go, because the data
@@ -274,12 +282,12 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		mov cx, ds
-		add cx, strict word 0xa00>>4  ; Skip over boot_sector+setup_sectors. !! Remove `strict word' if it becomes smaller.
+		add cx, strict word BXS_SIZE>>4  ; Skip over boot_sector+setup_sectors. !! Remove `strict word' if it becomes smaller.
 		mov ax, KERNELSEG
-		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus 0xa00>>4; AX == KERNELSEG.
+		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4; AX == KERNELSEG.
 		cmp cx, ax
 		jae .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
-.setup_backward_copy:  ; Copy them in backward (descending), because the destination comes after the source, and they may overlap.
+.setup_backward_copy:  ; Copy them backward (descending), because the destination comes after the source, and they may overlap.
 		neg dx  ; DX := -(0x200)>>4. Change copy direction to descending.
 		add ax, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust destination segment to point to the last sector.
 		add cx, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust source      segment to point to the last sector.
@@ -288,8 +296,8 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		;mov dx, 0x200>>4  ; Already set.
 		;mov ax, KERNELSEG  ; Already set. AX := segment of first destination sector.
 		;mov es, ax  ; Already set. ES := segment of first destination sector.
-		;add cx, 0 ; Already set. CX := segment of first source sector (with offset 0 it points to code32), minus 0xa00>>4.
-		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to code32), minus 0xa00>>4.
+		;add cx, 0 ;   Already set. CX := segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4.
+		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4.
 .after_setup_copy:
 		mov ds, cx
 		mov es, ax
@@ -314,7 +322,8 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		pop ds
 		push ss  ; INITSEG (== 0x9000).
 		pop es
-		jmp (INITSEG+0x20):0  ; Jump to the relocated setup_sectors.start (0x9020:0), simulating a Linux bootloader.
+		cli
+		jmp INITSEG:(setup_sectors.ck-boot_sector)
 
 		times (.start-$)&1 nop  ; Align to even.
 .copy_of_setup_sectors:  ; Extra bytes from the beginning of setup_sectors, so that we can figure out that it has been loaded (not only the boot_sector).
@@ -330,7 +339,7 @@ boot_sector:  ; 1 sector of 0x200 bytes. Loaded to 0x9000. GRUB 1 and QEMU load 
 		times 0x1f1-($-.start) db 0
 .linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sectors.linux_boot_header.end.
 		assert_fofs 0x1f1
-.setup_sects:	db 4  ; (read) The size of the setup in sectors. Must be 4 for compatibility with old-protoocl Linux bootloaders (such as old LILO).
+.setup_sects:	db 4  ; (read) The size of the setup in sectors. That is, the 32-bit kernel image starts at file offset (setup_sects+1)<<9. Must be 4 for compatibility with old-protocol Linux bootloaders (such as old LILO).
 		assert_fofs 0x1f2
 .root_flags:	dw 0  ; (read, modify optional) If set, the root is mounted readonly.
 		assert_fofs 0x1f4
@@ -396,6 +405,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 %endif
 
 		cli ; no interrupts allowed
+		mov word [cs:jmp_offset-setup_sectors], ((INITSEG<<4)&0xffff)+linux_entry-boot_sector
 		jmp INITSEG:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
 .ck:		cld
 
@@ -416,7 +426,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		mov ds, ax
 		mov es, ax
 		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
-		mov sp, setup_stack+0x200-boot_sector  ; 0x200+0xa00-0x24 bytes of real-mode stack. We need only a few bytes below for calls. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
+		mov sp, boot_sector+6*0x200  ; 0x200 bytes of temporary real-mode stack, starting 5*0x200 bytes (loaded by the Linux bootloader) after INITSEG<<4. We need only a few bytes below for calls. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
 		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
 		;lidt [idt_48-boot_sector]
@@ -478,7 +488,8 @@ alt_a20_done:
 		mov gs, ax
 
 		; No need to set .cl_magic, we are not passing a command line.
-		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+start_32-boot_sector)
+		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+chain_entry-boot_sector)  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
+jmp_offset: equ $-6
 
 		; This routine checks that the keyboard command queue is empty
 		; (after emptying the output buffers)
@@ -510,10 +521,9 @@ gdt_48:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
 
 %ifdef MULTIBOOT
-		times 4*0x200-($-setup_sectors)-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
-		assert_fofs 0xa00-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE
-  multiboot:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
-  .entry:  ; If you change code below, update MULTIBOOT_STARTUP_CODE_SIZE accordingly.
+		times BXS_SIZE-($-boot_sector)-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
+		assert_fofs BXS_SIZE-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE
+  multiboot_entry:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
   cpu 386
   bits 32
 		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
@@ -548,15 +558,30 @@ gdt_48:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		mov ecx, (code32.end-code32+3)>>2
 		rep movsd  ; We need this move, the memtest86+-5.x 32-bit kernel is not position-independent.
 
-		; Fall through to start_32.
+		jmp short start_32  ; With Multiboot load protocol we don't copy, the kernel is already at its right place.
   bits 16
   cpu 8086
 %endif
 
-start_32:  ; Setup registers and jump to kernel.
+linux_entry:  ; Setup registers and jump to kernel. We assume that already IF=0 (cli) and DF=0 (cld).
 cpu 386
 bits 32
-		; We assume that already IF=0 (cli) and DF=0 (cld).
+		; Move code at KERNELSEG<<4 forward by 3 sectors. Copy the data backward (descending), because the destination comes after the source, and they may overlap.
+		std
+		mov esi, (KERNELSEG<<4)+((code32.end-code32-1-3*0x200)&~3)
+		mov edi, (KERNELSEG<<4)+((code32.end-code32-1-3*0x200)&~3)+(3*0x200)
+		mov ecx, (code32.end-code32+3-3*0x200)>>2
+		rep movsd
+		cld
+		; Copy 3 sectors from (INITSEG<<4)+2*0x200 to KERNELSEG<<4.
+		lea edi, [esi+4]  ; EDI := KERNELSEG<<4.
+		mov esi, (INITSEG<<4)+2*0x200
+		mov cx, (3*0x200)>>2  ; 1 byte shorter than `mov ecx, ...'.
+		rep movsd
+		; Fall through to start_32.
+
+chain_entry:  ; Fall through to start_32.
+start_32:  ; Linux, chain and Multiboot load protocols all end here.
 		mov word [0x90022+2], 9  ; boot_sector.cl_offset_high_word.
 		;xchg eax, ebp  ; EAX := Multiboot signature; EBP := 0.
 		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
@@ -571,24 +596,24 @@ bits 16
 cpu 8086
 
 %ifdef MULTIBOOT
-		assert_fofs 0xa00-OUR_MULTIBOOT_HEADER_SIZE
+  multiboot2:	assert_fofs BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE  ; If this fails, increase or decrease OUR_MULTIBOOT_STARTUP_CODE_SIZE by that amount.
   .multiboot_align_check: times -(($-boot_sector.start)&3) nop  ; Check alignment of the .multiboot_v1 below. GRUN 1 0.97
   .multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
   .multiboot.magic: dd MULTIBOOT_MAGIC
   .multiboot.flags: dd OUR_MULTIBOOT_FLAGS
   .multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
-  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(multiboot.entry-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot came before load_addr.
+  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(multiboot_entry-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot came before load_addr.
   .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for KERNELSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
-  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot.entry
-  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot.entry  ; No specific .bss to be cleared by the bootloader.
+  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_entry
+  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_entry  ; No specific .bss to be cleared by the bootloader.
   .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR
   .multiboot_end:
   .multiboot_size_check: assert_at .multiboot+0x20
 %else
-		times 4*0x200-($-setup_sectors) db 0  ; !! Omit (most of) these bytes, do two `rep movsd's instead.
+		times BXS_SIZE-($-boot_sector) db 0
 %endif
-		assert_fofs 0xa00
-setup_stack:  ; 0x200 bytes.
+		assert_fofs BXS_SIZE
+setup_stack:  ; 0x200 bytes of stack from here.
 
 code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to (KERNELSEG<<4) == 0x10000.
 cpu 386
@@ -651,8 +676,8 @@ bits 32
 		int 0x19  ; Reboot.
 		; !! Disable the A20 gate. What does GRUB 1 0.97 do?
 %endif
-.end:
-		%if code32.end==code32
-		  %error FATAL_EMPTY_CODE32
-		  times -1 nop
+
+		%if $-boot_sector<0xa00  ; File size must be at least 5 sectors (0xa00 == 2560 bytes) for the old Linux load protocol.
+		  times 0xa00-($-boot_sector) db 0
 		%endif
+.end:
