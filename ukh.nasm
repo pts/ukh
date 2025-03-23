@@ -134,13 +134,26 @@ LOADFLAG_READ:
 		jmp short %%back
 %endm
 
-; With the Linux kernel protocols, the bootloader loads the first 0xa00
-; bytes (boot_sector and setup_sectors) to INITSEG<<4 (== 0x90000), the rest
-; (code32) to KERNELSEG<<4 (== 0x10000) and jumps to 0x9020:0
-; (setup_sectors) in real mode.
+; With the Linux load protocol, the bootloader loads the first 5 sectors
+; (0xa00 bytes) (boot_sector and setup_sectors) to INITSEG<<4 (== 0x90000),
+; the rest (code32) to KERNELSEG<<4 (== 0x10000) and then jumps to 0x9020:0
+; (setup_sectors) in real mode. Thus it starts running the code at the
+; beginning of setup_sectors, the sector following boot_sector.
 ;
-; With the chain load protocol, the bootloader loads everything to
-; BOOT_ENTRY_ADDR (0x7c00), and jumps to 0:BOOT_ENTRY_ADDR.
+; With the PX subtype of the chain load protocol, the bootloader loads the
+; entire kernel file to BOOT_ENTRY_ADDR (0x7c00), and jumps to
+; 0:BOOT_ENTRY_ADDR in real mode. Thus it starts running the code at the
+; beginning of boot_sector. With other subtypes of the chain load protocol,
+; the kernel file is loaded to a different address.
+;
+; With the Multiboot load protocol, the bootloader locates the multiboot
+; header in the first 16 sectors (0x2000 == 8192 bytes), locates the
+; Multiboot 1 header (`.multiboot:` in the source code), and loads a
+; substring of the file to the address specified in the Multiboot v1 header,
+; and jumps to the entry point (also specified there) in i386 32-bit
+; protected mode. Thus it doesn't run any code in boot_sector or
+; setup_sectors in real mode (unless the protected-mode code explicitly
+; switches to real mode).
 ;
 ; Info about the BIOS drive number:
 ;
