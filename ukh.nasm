@@ -2,10 +2,9 @@
 ; ukh.nasm: Universal Kernel Header (UKH)
 ; by pts@fazekas.hu at Mon Mar 17 13:45:39 CET 2025
 ;
-; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DMEMTEST86PLUS5 -DMEMTEST86PLUS5_BIN="'memtest86+-5.01-dist.bin'" -o memtest86+.kernel.bin ukh.nasm
-; Run it with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel memtest86+.kernel.bin
-;
-; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
+; Compile with: nasm -O0 -w+orphan-labels -f bin -o testk1.multiboot.bin testk1.nasm  # Includes ukh.nasm.
+; Minimum NASM version required 0.98.39.
+; Run it with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk1.multiboot.bin
 ;
 ; !! Pass the BIOS drive number for both Multiboot and non-Multiboot protocols at byte [0x90007] (already 0xff by default), or 0xff if unknown.
 ; !! Move the kernel command line to linear address 0x90400. That's the smallest, because of the .protected_mode_far and .real_mode library functions.
@@ -15,7 +14,7 @@
 ; !! Add support for 16-bit payload.
 ; !! Add support for multiboot with 16-bit payload. Switch back to real mode.
 ; !! Add `upxbc --flat16x` and `apack1p -1 -x` compressor for the 16-bit payload. Make this compression without a prefix.
-; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01 binary.
+; !! Apply some Ubuntu bugfix patches to the memtest86+-5.01-dist.bin binary.
 ; !! Instead of halting, wait for keypress and reboot.
 ; !! See how much better memtest86+-5.01.bin compresses (uncompressed size is about 32 KiB larger).
 ; !! Simplfy jumps in upxbc --flat32 decompress and lxunfilter functions.
@@ -80,9 +79,10 @@
 ; * The BIOS drive number (or 0xff if unknown) is available at byte [0x90007]. It is unknown for the Linux load protocol, unknown for Multiboot via QEMU (unused, QEMU recognizes Linux first), known for Multiboot via GRUB, and known for chain.
 ; * Calling software interrupts (such as BIOS video services wit int 10h) is not supported in protected mode. Call it like this: call ukh_real_mode, do sti, do the *int ...* instruction, and then call ukh_protected_mode_far.
 ; * UKH provides the following API functions:
-;   * API function ukh_real_mode. Switches from 32-bit protected mode to real mode. Call it from 32-bit protected mode at 0x90232. Doesn't enable (sti) or disable (cli) interrupts.
-;   * API function ukh_protected_mode_far. Switches from real mode to 32-bit protected mode. Call it from real mode as far call at 0x9000:0x230. Disables interrupts (cli).
-;   * API function ukh_a20_gate_far. Call it from real mode with interrupts disabled as far call at 0x9000:4. AL=0 disables the A20 gate (allows less than 1 MiB of memory), AL=1 enables the A20 gate.
+;   * API function ukh_real_mode and NASM macro ukh_real_mode. Switches from 32-bit protected mode to real mode. Call it from 32-bit protected mode at 0x90232. Doesn't enable (sti) or disable (cli) interrupts.
+;   * API function ukh_protected_mode_far and NASM macro ukh_protected_mode. Switches from real mode to 32-bit protected mode. Call it from real mode as far call at 0x9000:0x230. Disables interrupts (cli).
+;   * API function ukh_a20_gate_far and NASM macro ukh_a20_gate_al. Call it from real mode with interrupts disabled as far call at 0x9000:4. AL=0 disables the A20 gate (allows less than 1 MiB of memory), AL=1 enables the A20 gate.
+;   * NASM macro ukh_halt. Halts the system in an infinite loop. Works in both protected mode and real mode.
 ;
 ; Limitations of UKH:
 ;
@@ -107,6 +107,75 @@
 ;    ```
 ;  * *bss* is like *boot*, but after loading to kernel file, bytes 0xb..0x25 of the kernel file are ignored (good enough for FAT12 and FAT16, too short for FAT32), and the bytes from the boot sector are used instead of them.
 ;
+; Testing notes:
+;
+; * memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `qemu-system-i386 -m 4` flag.
+; * Test command line support (even with Multiboot v1) by passing `btrace' in the memtest86+4.01 command line. It should show the *Press any key to advance to the next trace point* message at startup.
+;
+
+; --- Configuration.
+
+%ifdef UKH_MULTIBOOT
+  %ifdef UKH_NO_MULITBOOT
+    %error ERROR_CONFIG_CONFLICT_MULTIBOOT
+    db 1/0
+  %endif
+%elifndef UKH_NO_MULTIBOOT
+  %define UKH_MULTIBOOT  ; Enable it by default.
+%endif
+
+%ifdef UKH_PAYLOAD_32_FILE  ; Must be a filename in quotes.
+  %define UKH_PAYLOAD_32
+  %define __UKH_PAYLOAD_FILE UKH_PAYLOAD_32_FILE
+%endif
+
+%ifdef UKH_PAYLOAD_16A_FILE  ; Must be a filename in quotes.
+  %define UKH_PAYLOAD_16A
+  %define __UKH_PAYLOAD_FILE UKH_PAYLOAD_16A_FILE
+%endif
+
+%ifdef UKH_PAYLOAD_16B_FILE  ; Must be a filename in quotes.
+  %define UKH_PAYLOAD_16B
+  %define __UKH_PAYLOAD_FILE UKH_PAYLOAD_16B_FILE
+%endif
+
+%ifdef UKH_PAYLOAD_16A
+  %define UKH_PAYLOAD16
+%endif
+%ifdef UKH_PAYLOAD_16B
+  %define UKH_PAYLOAD_16
+%endif
+
+%ifdef UKH_PAYLOAD_16
+  %ifdef UKH_PAYLOAD_32
+    %error ERROR_CONFIG_CONFLICT_PAYLOAD_16_32
+    db 1/0
+  %endif
+  %ifdef UKH_PAYLOAD_16A
+    %ifdef UKH_PAYLOAD_16B
+      %error ERROR_CONFIG_CONFLICT_PAYLOAD_16_SUBTYPE
+      db 1/0
+    %endif
+  %elifndef UKH_PAYLOAD_16B
+    %error ERROR_CONFIG_MISSING_PAYLOAD_16_SUBTYPE
+    db 1/0
+  %endif
+  %error ERROR_UNSUPPORTED_PAYLOAD_16
+%elifndef UKH_PAYLOAD_32
+  %error ERROR_MISSING_PAYLOAD_TYPE  ; Add e.g. `%define UKH_PAYLOAD_32'.
+%endif
+
+%ifdef UKH_PAYLOAD_FILE_SKIP  ; Number of bytes to skip near the beginning. Nonnegative integer constant.
+  %assign UKH_PAYLOAD_FILE_SKIP UKH_PAYLOAD_FILE_SKIP
+%else
+  %define UKH_PAYLOAD_FILE_SKIP 0
+%endif
+
+%ifndef UKH_VERSION_STRING
+  %define UKH_VERSION_STRING 'ukh'
+%endif
+
+; --- Implementation for the UKH header (boot_sector: 0x200 bytes, setup_sector: 0x200 bytes).
 
 %macro assert_fofs 1
   times +(%1)-($-$$) times 0 nop
@@ -140,17 +209,17 @@ BOOT_ENTRY_ADDR equ 0x7c00
 LOADFLAG_READ:
 .HIGH: equ 1 << 0
 
-%macro halt 0
-		cli
-  %%back:	hlt
-		jmp short %%back
+%macro ukh_halt 0  ; Works in both protected mode and real mode.
+  cli
+  %%back: hlt
+  jmp short %%back
 %endm
 
 ; With the Linux load protocol, the bootloader loads the first 5 sectors
-; (0xa00 bytes) (boot_sector and setup_sectors) to INITSEG<<4 (== 0x90000),
+; (0xa00 bytes) (boot_sector and setup sector) to INITSEG<<4 (== 0x90000),
 ; the rest (code32) to KERNELSEG<<4 (== 0x10000) and then jumps to 0x9020:0
-; (setup_sectors) in real mode. Thus it starts running the code at the
-; beginning of setup_sectors, the sector following boot_sector.
+; (setup_sector) in real mode. Thus it starts running the code at the
+; beginning of setup_sector, the sector following boot_sector.
 ;
 ; With the PX subtype of the chain load protocol, the bootloader loads the
 ; entire kernel file to BOOT_ENTRY_ADDR (0x7c00), and jumps to
@@ -164,7 +233,7 @@ LOADFLAG_READ:
 ; substring of the file to the address specified in the Multiboot v1 header,
 ; and jumps to the entry point (also specified there) in i386 32-bit
 ; protected mode. Thus it doesn't run any code in boot_sector or
-; setup_sectors in real mode (unless the protected-mode code explicitly
+; setup_sector in real mode (unless the protected-mode code explicitly
 ; switches to real mode).
 ;
 ; Info about the BIOS drive number:
@@ -189,7 +258,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		call .code2
 .here:
 ; API function ukh_a20_gate_far. Call it from real mode at 0x9000:4.
-.a20_gate_far:	jmp near setup_sectors.a20_gate_far_low
+.a20_gate_far:	jmp near setup_sector.a20_gate_far_low
 .drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 		assert_at .gdt+8  ; End if first GDT entry.
 ..@KERNEL_CS: equ $-.gdt
@@ -199,7 +268,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
                 ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
                 ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
 ..@INIT16_CS: equ $-.gdt
-		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@BACK_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sectors), limit 4GiB-1, granularity 0x1000.
+		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@BACK_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, granularity 0x1000.
 
 .gdt_end:	assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
 .code2:		pop si  ; SI := actual offset of .here.
@@ -236,7 +305,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .fatal_unknown_protocol:
 		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
-.halt:		halt
+.halt:		ukh_halt
 .chain_protocol:  ; Now: CX == 0; DS == 0; SI == 0x7c00 == BOOT_ENTRY_ADDR; DL is the bios drive number.
 		xor bx, bx  ; Set up error message.
 		mov al, 'b'
@@ -244,10 +313,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 
 		mov ds, cx  ; DS := 0.
 		mov es, cx  ; ES := 0.
-		mov si, BOOT_ENTRY_ADDR+.copy_of_setup_sectors-.start
+		mov si, BOOT_ENTRY_ADDR+.copy_of_setup_sector-.start
 		inc byte [si+2]  ; 'GdrS' --> 'HdrS'.
-		mov di, BOOT_ENTRY_ADDR+setup_sectors-.start
-		mov cx, (.copy_of_setup_sectors.end-.copy_of_setup_sectors)>>1
+		mov di, BOOT_ENTRY_ADDR+setup_sector-.start
+		mov cx, (.copy_of_setup_sector.end-.copy_of_setup_sector)>>1
 		repe cmpsw
 		je short .cmp_matches
 		mov al, 'F'  ; Indicate fatal error: `bF' means that the bootloader has loaded only he first sector.
@@ -257,7 +326,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		;xor cx, cx  ; CX := 0. Not needed, CX is now 0.
 		mov al, 's'
 		mov cx, BOOT_ENTRY_ADDR>>4
-.any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sectors; AL is character to print; DL is the BIOS drive number.
+.any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sector; AL is character to print; DL is the BIOS drive number.
 		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
 		mov al, dl  ; Good: YSLINUX 4.07 boot, GRUB4DOS chainloader and FreeDOS boot sector pass the BIOS drive number (e.g. 0x80 for first HDD) in DL.
@@ -272,7 +341,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
-		; Copy BXS_SIZE bytes from DS:SI (actually loaded boot_sector+setup_sectors) to INITSEG<<4 == 0x90000. There is no overlap.
+		; Copy BXS_SIZE bytes from DS:SI (actually loaded boot_sector+setup_sector) to INITSEG<<4 == 0x90000. There is no overlap.
 		xor si, si
 		xor di, di
 		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
@@ -290,7 +359,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		mov cx, ds
-		add cx, strict word BXS_SIZE>>4  ; Skip over boot_sector+setup_sectors. !! Remove `strict word' if it becomes smaller.
+		add cx, strict word BXS_SIZE>>4  ; Skip over boot_sector+setup_sector. !! Remove `strict word' if it becomes smaller.
 		mov ax, KERNELSEG
 		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4; AX == KERNELSEG.
 		cmp cx, ax
@@ -326,21 +395,21 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 
-		jmp (INITSEG+0x20):(setup_sectors.setup_linux_and_chain-setup_sectors)
+		jmp (INITSEG+0x20):(setup_sector.setup_linux_and_chain-setup_sector)
 
 		times (.start-$)&1 nop  ; Align to even.
-.copy_of_setup_sectors:  ; Extra bytes from the beginning of setup_sectors, so that we can figure out that it has been loaded (not only the boot_sector).
-		db 0xeb, setup_sectors.setup_linux-(setup_sectors.jump+2)
+.copy_of_setup_sector:  ; Extra bytes from the beginning of setup_sector, so that we can figure out that it has been loaded (not only the boot_sector).
+		db 0xeb, setup_sector.setup_linux-(setup_sector.jump+2)
 		db 'GdrS'  ; Like 'HdrS', but obfuscate it from hex editors.
 		dw OUR_LINUX_BOOT_PROTOCOL_VERSION
 		dd 0
 		dw KERNELSEG
-		dw setup_sectors.kernel_version_string-setup_sectors
-.copy_of_setup_sectors.end:
-		times -((.copy_of_setup_sectors.end-.copy_of_setup_sectors)&1) nop  ; Fail if size is not even. Evenness needed by cmpsw above.
+		dw setup_sector.kernel_version_string-setup_sector
+.copy_of_setup_sector.end:
+		times -((.copy_of_setup_sector.end-.copy_of_setup_sector)&1) nop  ; Fail if size is not even. Evenness needed by cmpsw above.
 
 		times 0x1f1-($-.start) db '-'
-.linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sectors.linux_boot_header.end.
+.linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sector.linux_boot_header.end.
 		assert_fofs 0x1f1
 .setup_sects:	db 4  ; (read) The size of the setup in sectors. That is, the 32-bit kernel image starts at file offset (setup_sects+1)<<9. Must be 4 for compatibility with old-protocol Linux bootloaders (such as old LILO).
 		assert_fofs 0x1f2
@@ -360,7 +429,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .boot_flag:	dw BOOT_SIGNATURE  ; (read) 0xaa55 magic number.
 		assert_fofs 0x200
 
-setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
+setup_sector:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
 .start:		assert_fofs 0x200
 .jump:		jmp short .setup_linux  ; (read) Jump instruction. Entry point.
 		assert_fofs 0x202
@@ -372,7 +441,7 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 		assert_fofs 0x20c
 .start_sys_seg: dw KERNELSEG  ; (read) The load-low segment (0x1000), i.e. linear address >> 4 (obsolete). Ignored by both GRUB 1 0.97 and QEMU 2.11.1. In Linux kernel mode, they don't set root= either, and they don't pass the boot drive (boot_drive, saved_drive, current_drive, is saved_drive the result of `rootnoverify'?) number anywhere. Also GRUB 1 0.97 passes the boot drive in DL in `chainloader' (stage1) mode only.
 		assert_fofs 0x20e
-.kernel_version: dw .kernel_version_string-setup_sectors  ; (read) Pointer to kernel version string or 0 to indicate no version. Relative to .setup_sectors.
+.kernel_version: dw .kernel_version_string-setup_sector  ; (read) Pointer to kernel version string or 0 to indicate no version. Relative to setup_sector.
 		assert_fofs 0x210
 .type_of_loader: db 0  ; (write obligatory) Bootloader identifier.
 		assert_fofs 0x211
@@ -431,13 +500,13 @@ bits 16
 		;sti  ; Give the caller a chance to call .a20_gate while interrupts are still disabled.
 		retf
 
-.setup_linux:  ; The 16-bit Linux entry point jumps here from setup_sectors.start, as jmp INITSEG+0x20:0.
+.setup_linux:  ; The 16-bit Linux entry point jumps here from setup_sector.start, as jmp INITSEG+0x20:0.
 %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 %endif
-		add word [cs:.jmp_offset-setup_sectors], byte linux_entry-chain_entry  ; Change the protected mode entry point from chain_entry to linux_entry.
+		add word [cs:.jmp_offset-setup_sector], byte linux_entry-chain_entry  ; Change the protected mode entry point from chain_entry to linux_entry.
 .setup_linux_and_chain:
 		cli  ; No interrupts allowed. The Linux bootloader usually provides a valid stack, but we don't rely on it.
 		xor ax, ax
@@ -454,11 +523,11 @@ bits 16
 		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in 16-bit mode.
 
 		push cs  ; Simulate far call.
-		push strict word chain_entry-setup_sectors  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
+		push strict word chain_entry-setup_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
 .jmp_offset: equ $-2
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
-		;lidt [cs:idtr-setup_sectors]
-		lgdt [cs:gdtr-setup_sectors]
+		;lidt [cs:idtr-setup_sector]
+		lgdt [cs:gdtr-setup_sector]
 		;jmp short .protected_mode_far  ; Fall through.
 .protected_mode_far_low:
 		cli
@@ -570,11 +639,11 @@ bits 16
 .gloop2ret:	retf
 
 ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
-.kernel_version_string: db 'memtest86+-5.01', 0  ; !! Make this configurable. !! Pad it.
+.kernel_version_string: db UKH_VERSION_STRING, 0
 
 bits 32
 
-%ifdef MULTIBOOT
+%ifdef UKH_MULTIBOOT
   multiboot_entry:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
 		; We don't have have a stack (ESP is invalid).
@@ -607,7 +676,7 @@ bits 32
 		sub eax, ecx
 		ror eax, 16  ; Swap low and high words.
 		mov [(INITSEG<<4)+boot_sector.cl_magic-boot_sector.start], eax  ; Also sets boot_sector.cl_offset.
-		rep movsb  ; Test it by passing `btrace' in the memtest86+4.01 command line. It should show the *Press any key to advance to the next trace point* message at startup.
+		rep movsb
 		xor eax, eax
 		stosb  ; Add terminating NUL.
 
@@ -652,11 +721,11 @@ cpu 8086
 ; lidt instruction. The table entries have to remain valid until the next
 ; lgdt or lidt instruction (i.e. long).
 ;
-; We put this very late in setup_sectors, for the size saving in multiboot_entry.
+; We put this very late in setup_sector, for the size saving in multiboot_entry.
 gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
 
-%ifdef MULTIBOOT
+%ifdef UKH_MULTIBOOT
 		times BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE-($-boot_sector) db '-'
 		assert_fofs BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE
   multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
@@ -675,45 +744,62 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		times BXS_SIZE-($-boot_sector) db '-'
 %endif
 		assert_fofs BXS_SIZE
-setup_stack:  ; 0x200 bytes of stack from here.
 
-code32:		; 32-bit kernel code (zImage, maximum 512 KiB), but it can be anything. Loaded to (KERNELSEG<<4) == 0x10000.
-cpu 386
-bits 32
+; --- Now the comes the payload, at file offset 0x400.
+;
+; * The payload will be loaded to (KERNELSEG<<4) == 0x10000.
+; * Maximum payload size: 512 KiB, but the bootloader may restrict it further.
+;
 
-%ifdef MEMTEST86PLUS5  ; Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.
-  %ifndef MEMTEST86PLUS5_BIN
-    %define MEMTEST86PLUS5_BIN  'memtest86+-5.01-dist.bin'  ; Works. ~150 KiB.
-    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.01.bin'  ; Works. Ubuntu. ~182 KiB. Larger probably because of different C compiler or flags.
-    ;%define MEMTEST86PLUS5_BIN  'memtest86+-5.31b-dist.bin'  ; Works.
-  %endif
-		; It starts with cld, cli. It's not necessary, we set it up like that already.
-		incbin MEMTEST86PLUS5_BIN, 0xa00
-%else
-  bits 32
-		mov word [0xb8000], 0x1700|'1'  ; Write to the top left corner to the text screen. It works.
-		call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far. call setup_sectors.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE
-  bits 16
-		mov bx, 0xb800
-		mov es, bx
-		mov word [es:2], 0x1700|'2'  ; Write just after the top left corner to the text screen. It works.
-		call INITSEG:0x230  ; ukh_protected_mode_far.
-  bits 32
-		mov word [0xb8004], 0x1700|'3'  ; Write just 2 characetrs after the top left corner to the text screen. It works.
-		call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far. call setup_sectors.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE
-  bits 16
-		mov ax, 0xe00+'R'
-		xor bx, bx  ; Set up printing.
-		int 0x10  ; Print character in AL. !! Strange: changes the video mode instead in QEMU. Why
-		mov al, 0  ; A20 gate direction: disable.
-		call INITSEG:4  ; ukh_a20_gate_far.  ; Disable the A20 gate. We must do this in 16-bit mode, with interrupts disabled.
-		sti  ; Only after the call to ukh_a20_gate_far.
-		xor ax, ax
-		int 0x16  ; Wait for user keypress. Works.
-		int 0x19  ; Reboot.
+code32:  ; !!! Rename it to ukh_payload.
+
+bits 16
+%ifdef UKH_PAYLOAD_32  ; i386+ 32-bit protected-mode payload.
+  cpu 386
+  %define UKH_BITS 32
+  %macro ukh_real_mode 0
+    %if UKH_BITS==32
+      call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; !!! ukh_real_mode_far. call setup_sector.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE
+      %define UKH_BITS 16
+      bits 16
+    %else
+      %error ERROR_MUST_BE_IN_PROTECTED_MODE
+      times -1 nop
+    %endif
+  %endm
+  %macro ukh_protected_mode 0
+    %if UKH_BITS==16
+      call INITSEG:0x230  ; !!! ukh_protected_mode_far.
+      %define UKH_BITS 32
+      bits 32
+    %else
+      %error ERROR_MUST_BE_IN_REAL_MODE
+      times -1 nop
+    %endif
+  %endm
+  %macro ukh_a20_gate_al 1  ; Ruins AL.
+    %if UKH_BITS==16
+      mov al, %1  ; A20 gate direction.
+      call INITSEG:4  ; !!! ukh_a20_gate_far.  ; Disable the A20 gate. We must do this in 16-bit mode, with interrupts disabled.
+    %else
+      %error ERROR_MUST_BE_IN_REAL_MODE
+      times -1 nop
+    %endif
+  %endm
+%elifdef UKH_PAYLOAD_16
+  cpu 8086
+  %define UKH_BITS 16
 %endif
+bits UKH_BITS
 
-		%if $-boot_sector<0xa00  ; File size must be at least 5 sectors (0xa00 == 2560 bytes) for the old Linux load protocol.
-		  times 0xa00-($-boot_sector) db 0
-		%endif
-.end:
+%macro ukh_end 0
+  %if $-boot_sector<0xa00  ; File size must be at least 5 sectors (0xa00 == 2560 bytes) for the old Linux load protocol.
+    times 0xa00-($-boot_sector) db 0
+  %endif
+  code32.end:  ; !!! Move it earlier, but not everywhere.
+%endm
+
+%ifdef __UKH_PAYLOAD_FILE
+  incbin __UKH_PAYLOAD_FILE, UKH_PAYLOAD_FILE_SKIP
+  ukh_end
+%endif
