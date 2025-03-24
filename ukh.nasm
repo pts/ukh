@@ -472,17 +472,6 @@ bits 16
 		;jmp short .protected_mode_far  ; Fall through.
 .protected_mode_far_low:
 		cli
-		; Magic to convert a real-mode segment*16+offset address to a linear address in dword [ESP], without modifying any general-purpose registers. (It modifies EFLAGS.)
-		xchg eax, [esp]
-		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
-		push byte 0  ; Pushes 2 bytes, because we are in real mode.
-		push ax  ; Offset.
-		shr eax, 16
-		shl eax, 4
-		add [esp], eax  ; Add offset to linear segment. Keep it pushed for the `ret' below.
-		pop eax
-		xchg eax, [esp]
-		; End of linear address conversion magic.
 		push eax  ; Save.
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
 		;lidt [cs:idtr-boot_sector]
@@ -498,8 +487,23 @@ bits 16
 		mov fs, ax
 		mov gs, ax
 		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+.prot_ret-boot_sector)  ; This is 8 bytes, without dword it jumps incorrectly. Jumps to .prot_ret (right below), activates protected mode.
-.prot_ret:	pop ax  ; Restore EAX. Actually this is `pop eax', we are in protected mode now.
+.prot_ret:
+bits 32
+		pop eax  ; Restore.
+		; Magic to convert a real-mode segment*16+offset address to a linear address in dword [ESP], without modifying any general-purpose registers. (It modifies EFLAGS.)
+		xchg eax, [esp]
+		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
+		push byte 0  ; Pushes 2 bytes, because we are in real mode.
+		push ax  ; Offset.
+		shr eax, 16
+		shl eax, 4
+		add [esp], eax  ; Add offset to linear segment. Keep it pushed for the `ret' below.
+		pop eax
+		xchg eax, [esp]
+		; End of linear address conversion magic.
 		ret  ; This is already in protected mode, but the ret opcode is the same.
+bits 16
+
 ; These data bytes have to be valid only for the duration of the lgdt or lidt instruction. The table entries have to remain valid until the next lgdt or lidt instruction (i.e. long).
 .gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
