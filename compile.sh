@@ -23,7 +23,7 @@ if ! test -f memtest86+-5.01-dist-nrv.bin; then
   (dd if=/dev/zero bs=512 count=5 && cat upxbc2.tmp) >memtest86+-5.01-dist-nrv.bin || exit "$?"
 fi
 
-nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs stage2.nasm
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs grub1_bs.nasm
 #nasm-0.98.39 -O0 -w+orphan-labels -f bin -DPATCH -o grub1.bs stage2.nasm
 
 # Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.

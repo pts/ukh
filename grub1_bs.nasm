@@ -1,8 +1,8 @@
 ;
-; stage2.nasm: bs (PXE) header for GRUB 1 0.97 stage2
+; grub1_bs.nasm: bs (PXE) header for GRUB 1 0.97 stage2
 ; by pts@fazekas.hu at Thu Mar 20 03:35:23 CET 2025
 ;
-; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs stage2.nasm
+; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs grub1_bs.nasm
 ; !! incorrect: Run it with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel memtest86+.kernel.bin
 ;
 ; The stage1 binary is 512 bytes, it can be written to a floppy boot sector
