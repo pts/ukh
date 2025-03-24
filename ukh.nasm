@@ -590,13 +590,7 @@ bits 32
 
 		lgdt [byte edi-BXS_SIZE+gdtr-boot_sector]  ; Make subsequent API call ukh_real_mode work. We don't need to reload the CS, DS etc. just yet.
 
-		; Copy code32 to KERNELSEG<<4.
-		mov esi, OUR_MULTIBOOT_LOAD_ADDR+BXS_SIZE
-		mov edi, KERNELSEG<<4
-		mov ecx, (code32.end-code32+3)>>2
-		rep movsd
-
-  .cmdline:	xor ecx, ecx  ; Empty command line by default.
+  .cmdline:	;xor ecx, ecx  ; Empty command line by default. No need to set it, ECX is already 0.
 		test byte [ebx], MULTIBOOT_INFO_CMDLINE  ; multiboot_info.flags.
 		jz short .got_cmdline_length
 		mov esi, [ebx+4*4]  ; ESI: pointer to the command line from multiboot_info.cmdline.
@@ -616,6 +610,12 @@ bits 32
 		rep movsb  ; Test it by passing `btrace' in the memtest86+4.01 command line. It should show the *Press any key to advance to the next trace point* message at startup.
 		xor eax, eax
 		stosb  ; Add terminating NUL.
+
+		; Copy code32 to KERNELSEG<<4. We must copy late, because earlier we'd overwrite the command line by GRUB 1 0.97 (but not by GRUB4DOS 0.4.4).
+		mov esi, OUR_MULTIBOOT_LOAD_ADDR+BXS_SIZE
+		mov edi, KERNELSEG<<4
+		mov ecx, (code32.end-code32+3)>>2
+		rep movsd
 
 		jmp short start_32
 %endif
