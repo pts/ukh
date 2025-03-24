@@ -291,7 +291,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 
-		jmp (INITSEG+0x20):(setup_sector.setup_linux_and_chain-setup_sector)
+		jmp (INITSEG+0x20):(setup_sector.setup_chain-setup_sector)
 
 		times (.start-$)&1 nop  ; Align to even.
 .copy_of_setup_sector:  ; Extra bytes from the beginning of setup_sector, so that we can figure out that it has been loaded (not only the boot_sector).
@@ -359,7 +359,10 @@ setup_sector:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded 
 
 cpu 386
 
-		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
+.setup_chain:	add word [cs:.jmp_offset-setup_sector], byte chain_entry-linux_entry  ; Change the protected mode entry point from linux_entry to chain_entry.
+		jmp short .setup_linux_and_chain
+
+		times 0x30-($-.start) db 0  ; QEMU 2.11.1 `qemu-system-i386-kernel' overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
 
 ; API function ukh_protected_mode_far. Call it from real mode at 0x9000:0x230.
 .protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to INITSEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
@@ -385,13 +388,17 @@ bits 16
 		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
 		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment. !!! Is this jump needed?
 .real2:  ; We are in real mode now in terms of CS.
-		mov ax, KERNELSEG
+		xor ax, ax
+		mov ss, ax
+  %if KERNELSEG&0xff
+    %error ERROR_KERNELSEG_HAS_NONZERO_LOW_BYTE  ; This prevents the `mov ah, ..' optimization below.
+    times -1 nop
+  %endif
+		mov ah, KERNELSEG>>8  ; 1 byte shorter than `mov ex, KERNELSEG'.
 		mov ds, ax
 		mov es, ax
 		mov fs, ax
 		mov gs, ax
-		xor ax, ax
-		mov ss, ax
 		pop eax  ; Restore.
 		;sti  ; Give the caller a chance to call .a20_gate while interrupts are still disabled.
 		retf
@@ -402,7 +409,6 @@ bits 16
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 %endif
-		add word [cs:.jmp_offset-setup_sector], byte linux_entry-chain_entry  ; Change the protected mode entry point from chain_entry to linux_entry.
 .setup_linux_and_chain:
 		cli  ; No interrupts allowed. The Linux bootloader usually provides a valid stack, but we don't rely on it.
 		xor ax, ax
@@ -419,7 +425,7 @@ bits 16
 		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in 16-bit mode.
 
 		push cs  ; Simulate far call.
-		push strict word chain_entry-setup_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
+		push strict word linux_entry-setup_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
 .jmp_offset: equ $-2
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
 		;lidt [cs:idtr-setup_sector]
@@ -446,8 +452,8 @@ bits 32
 		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
 		push byte 0  ; Pushes 2 bytes, because we are in real mode.
 		push ax  ; Offset.
-		shr eax, 16
-		shl eax, 4
+		shr eax, 12
+		and al, 0xf0
 		add [esp], eax  ; Add offset to linear segment. Keep it pushed for the `ret' below.
 		pop eax
 		xchg eax, [esp]
@@ -494,12 +500,11 @@ bits 16
 		in al, dx
 		cmp al, 0xff
 		jz short .try_keyboard  ; Skip the port92 code if it's unimplemented (read returns 0xff).
-		test ah, ah
-		jz short .ga87
 		or al, 2  ; Set the ALT_A20_GATE bit.
-		jmp short .ga89
-.ga87:		and al, ~2  ; Clear the ALT_A20_GATE bit.
-.ga89:		and al, ~1  ; Clear the INIT_NOW bit, so that we don't accidently reset the machine.
+		test ah, ah
+		jnz short .bit_done
+		and al, ~2  ; Clear the ALT_A20_GATE bit.
+.bit_done:	and al, ~1  ; Clear the INIT_NOW bit, so that we don't accidently reset the machine.
 		out dx, al
 		; Use the keyboard controller method anyway. !! Why? (Maybe because for disabling we need both.) https://stackoverflow.com/q/79529680
 .try_keyboard:  ; Use the keyboard controller.
