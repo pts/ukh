@@ -8,7 +8,7 @@
 ; Please note that memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `-m 4`.
 ;
 ; !! Pass the BIOS drive number for both Multiboot and non-Multiboot protocols at byte [0x90007] (already 0xff by default), or 0xff if unknown.
-; !! Move the kernel command line to linear address 0x90026.
+; !! Move the kernel command line to linear address 0x90400. That's the smallest, because of the .protected_mode_far and .real_mode library functions.
 ; !! Compress the 32-bit payload with `upxbc --flat32`. This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work.
 ; !! Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kernel old protocol.
 ; !! Add progress indicator to the LZMA decompressor.
@@ -194,7 +194,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
                 dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x18. 32-bit, data, read-write,   base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
                 ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
                 ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
-.gdt_end:	assert_at .gdt+3*8  ; Must be less than .cl_magic-.start, so that the GDT doesn' get overwritten.
+..@INIT16_CS: equ $-.gdt
+		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@BACK_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sectors), limit 4GiB-1, granularity 0x1000.
+
+.gdt_end:	assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
 .code2:		sub si, byte .here-.start  ; SI := actual offset of .start.
 		mov ax, 0xe00+'?'  ; Set up error message.
 		mov cx, cs
@@ -419,44 +422,108 @@ cpu 386
 		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed? https://wiki.osdev.org/Protected_Mode
 		out 0x70, al
 %endif
-
-		; The system will move itself to its rightful place.
-		; reload the segment registers and the stack since the
-		; APs also execute this code
-		mov ax, cs  ; INITSEG.
-		mov ds, ax
-		mov es, ax
-		mov ss, ax  ; reset the stack to setup_stack...setup_stack+0x200.
-		mov sp, boot_sector+6*0x200  ; 0x200 bytes of temporary real-mode stack, starting 5*0x200 bytes (loaded by the Linux bootloader) after INITSEG<<4. We need only a few bytes below for calls. !! Extend the stack all the way to INITSEG:0xa000-cmdline_size.
-		; !! Can we do without a stack here (ESP == 0, memtest86+-5.01 code32 change ESP from 0 to something valid) if we get rid of the pushes and pops (including `push edi', `call' and `ret') below?
-		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
-		;lidt [idt_48-boot_sector]
-		lgdt [.gdt_48-boot_sector]  ; load gdt with whatever appropriate
 		mov al, 1  ; A20 gate direction: enable.
-		call .a20_gate  ; Enable the A20 gate.
-		mov ax, 1  ; protected mode (PE) bit
-		lmsw ax
-		;mov eax, cr0  ; !! Why does lmsw work here but not when switching back to real mode?
-		;or al, 1  ; PE := 1.
-		;mov cr0, eax
+		call .a20_gate  ; Enable the A20 gate. We must do this in 16-bit mode.
+		xor ax, ax
+		mov ss, ax
+		mov esp, 0xfffc  ; Aligned to 4. It's simpler to convert if we keep ESP 16-bit only (i.e. we never put 0x10000 to it). !! Maybe we can still do it if we pop early in .protected_mode_far.
 
-		; Note that the short jump isn't strictly needed, although there are
-		; reasons why it might be a good idea. It won't hurt in any case.
-		jmp short .flush_instr
+%if 1  ; %ifdef MULTIBOOT  ; No room for these tests with multiboot.
+		push cs
+		push strict word chain_entry-boot_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
+  .jmp_offset: equ $-2
+		;jmp short .protected_mode_far  ; Fall through.
+%else
+		mov ax, 0xe00+'S'
+		xor bx, bx
+		int 0x10  ; Print character in AL.
+		push cs
+		call .protected_mode_far
+  bits 32
+		mov word [0xb8000], 0x1700|'P'  ; Write to the top left corner to the text screen. It works.
+		call .real_mode
+  bits 16
+		;mov bx, 0xb800
+		;mov es, bx
+		;mov word [es:2], 0x1700|'Q'  ; Write just after the top left corner to the text screen. It works.
+		;cli
+		;hlt
+		mov ax, 0xe00+'R'
+		xor bx, bx  ; Set up printing.
+		int 0x10  ; Print character in AL. !! Strange: changes the video mode instead in QEMU. Why
+		mov al, 0  ; A20 gate direction: disable.
+		call .a20_gate  ; Enable the A20 gate. We must do this in 16-bit mode.
+		xor ax, ax
+		int 0x16  ; Wait for user keypress. Works.
+		int 0x19  ; Reboot.
+		; !! Disable the A20 gate. What does GRUB 1 0.97 do?
+  .jmp_offset: dw 0
+%endif
+
+.protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to INITSEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
+bits 16
+		cli
+		; Magic to convert a real-mode segment*16+offset address to a linear address in dword [ESP], without modifying any general-purpose registers. (It modifies EFLAGS.)
+		xchg eax, [esp]
+		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
+		push byte 0  ; Pushes 2 bytes, because we are in real mode.
+		push ax  ; Offset.
+		shr eax, 16
+		shl eax, 4
+		add [esp], eax  ; Add offset to linear segment. Keep it pushed for the `ret' below.
+		pop eax
+		xchg eax, [esp]
+		; End of linear address conversion magic.
+		push eax  ; Save.
+		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
+		;lidt [cs:idtr-boot_sector]
+		lgdt [cs:.gdtr-boot_sector]
+		mov eax, cr0  ; !! Save registers.
+		or al, 1  ; PE := 1.
+		mov cr0, eax
+		jmp short .flush_instr  ; Jump not strictly needed, but we play it safe.
 .flush_instr:	mov ax, ..@KERNEL_DS
 		mov ds, ax
 		mov es, ax
-		mov ss, ax  ; This makes the stack useless, because ESP is now invalid. It's not a big problem, starts_32 will set it up soon, before that we don't use it, and interrupts are disabled.
+		mov ss, ax  ; Since the protected-mode SS is also zero-based, ESP remains valid.
 		mov fs, ax
 		mov gs, ax
-
-		; No need to set .cl_magic, we are not passing a command line.
-		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+chain_entry-boot_sector)  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
-.jmp_offset: equ $-6
-
+		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+.prot_ret-boot_sector)  ; This is 8 bytes, without dword it jumps incorrectly. Jumps to .prot_ret (right below), activates protected mode.
+.prot_ret:	pop ax  ; Restore EAX. Actually this is `pop eax', we are in protected mode now.
+		ret  ; This is already in protected mode, but the ret opcode is the same.
 ; These data bytes have to be valid only for the duration of the lgdt or lidt instruction. The table entries have to remain valid until the next lgdt or lidt instruction (i.e. long).
-.gdt_48:	dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
+.gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
+
+.real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS and SS to KERNELSEG. Enables interrupts (sti). Keeps all general-purpose registers intact. Ruins EFLAGS.
+bits 32
+		xchg eax, [esp]
+		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
+		rol eax, 16
+		shl ax, 12
+		rol eax, 16
+		xchg eax, [esp]
+		push eax  ; Converted linear address in EAX to real-mode segment:offset. On the top of the stack is the backup copy of EAX, below (i.e. higher address) is the real-mode segment:offset result of the conversion.
+		;jmp ..@INIT16_CS:.real1-boot_sector
+		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
+.real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
+bits 16
+		mov eax, cr0
+		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
+		mov cr0, eax
+		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
+		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment.
+.real2:  ; We are in real mode now in terms of CS.
+		mov ax, KERNELSEG
+		mov ds, ax
+		mov es, ax
+		mov fs, ax
+		mov gs, ax
+		xor ax, ax
+		mov ss, ax
+		pop eax  ; Restore.
+		sti
+		retf
 
 ; Enables (AL == 1, no wraparound at 1 MiB) or disables (AL == 0, wraparound
 ; at 1 MiB) the A20 gate. Must be called in real mode (because it calls an
@@ -600,13 +667,13 @@ bits 32
 chain_entry:  ; Fall through to start_32.
 start_32:  ; Linux, chain and Multiboot load protocols all end here.
 		mov word [0x90022+2], 9  ; boot_sector.cl_offset_high_word.
-		;xchg eax, ebp  ; EAX := Multiboot signature; EBP := 0.
 		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
-		mov esp, KERNELSEG<<4  ; A useful value. The Multiboot v1 specification allows any (nonworking) value in ESP.
+		mov esp, KERNELSEG<<4  ; A useful value. The Multiboot v1 specification allows any (nonworking) value in ESP. We will subtract 4 so that it won't be truncated when we use only the low 16 bits in real mode (SP).
+		push esp
 		sub eax, eax  ; In EFLAGS, set OF=0, SF=0, ZF=1, AF=0, PF=1 and CF=0 according to the result.
 		times 8 push eax
 		popa  ; Set EAX, EBX, ECX, EDX, ESI, EDI and EBP to 0 (but not ESP). We do it for reproducibility.
-		jmp esp  ; This works even if non-Multiboot code jumps into .setup_regs_and_jump_to_kernel.
+		jmp dword [esp]  ; This works even if non-Multiboot code jumps into .setup_regs_and_jump_to_kernel.
 
 		times (boot_sector.start-$)&3 nop  ; Align to multiple of 4.
 bits 16
@@ -650,7 +717,7 @@ bits 32
 		;cli  ; Not needed, already done.
 		;mov esp, KERNELSEG<<4   ; Not needed, it already has this value. The value will be useful as SS:SP in real mode as well.
 		;lgdt [.real_gdtr+((KERNELSEG<<4)-code32)]  ; Equivalent but longer than below. This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment.
-		lgdt [byte esp+.real_gdtr-code32]  ; This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment. Without -code32 and byte it actually happens to work, because KERNELSEG<<4 is a multiple of 0x100.
+		lgdt [byte esp+4+.real_gdtr-code32]  ; This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment. Without -code32 and byte it actually happens to work, because KERNELSEG<<4 is a multiple of 0x100.
 		dw 0xea66, 0, .RM_REAL1_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
   .real_gdt: equ $-8  ; Arbitrary values in the first segment descriptor.
   .RM_REAL1_CS: equ $-.real_gdt
