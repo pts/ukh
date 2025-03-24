@@ -43,6 +43,7 @@ cp -a fd1440k.bin fdfd13.img  && truncate -s 1440K fdfd13.img  && dd of=fdfd13.i
 cp -a fd1440k.bin fdsv249.img && truncate -s 1440K fdsv249.img && dd of=fdsv249.img if=bs/svardos-20240915-fixed-fat12-bs.bin     bs=2 skip=31 seek=31 count=225 conv=notrunc && mcopy -bsomp -i fdsv249.img memtest86+.nrv.kernel.bin  ::KERNEL.SYS || exit "$?"  # -fixed: Allows 198.5 KiB kernel instead of just 134.5 KiB. !! The compressed kernel is small enough without -fixed.
 cp -a fd1440k.bin fdg4d4.img  && truncate -s 1440K fdg4d4.img  && dd of=fdg4d4.img  if=bs/grub4dos-0.4.4-fixed-fat12-fat16-bs.bin bs=2 skip=31 seek=31 count=225 conv=notrunc && mcopy -bsomp -i fdg4d4.img  memtest86+.multiboot.bin   ::GRLDR      || exit "$?"  # -fixed: Drive number remains in DL.
 cp -a fd1440k.bin fdg4d6a.img && truncate -s 1440K fdg4d6a.img && dd of=fdg4d6a.img if=bs/grub4dos-0.4.6a-fat12-fat16-bs.bin      bs=2 skip=31 seek=31 count=225 conv=notrunc && mcopy -bsomp -i fdg4d6a.img memtest86+.multiboot.bin   ::GRLDR      || exit "$?"
+mcopy -bsomp -i fdg4d4.img real2.multiboot.bin ::R.K
 truncate -s 1440K fd1440k.bin
 
 rm -f liigboot.zip
