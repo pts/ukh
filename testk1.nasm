@@ -22,7 +22,20 @@
 		jz short .msg_done
 		int 0x10  ; Print character in AL. We have to be in real mode for this to succeed.
 		jmp short .msg_next
-.msg_done:	mov al, 'R'
+.msg_done:	mov cx, 0x9000
+		mov ds, cx
+		mov si, 0x22  ; Address of NUL-terminated kernel command line string.
+		cmp word [si-2], 0xa33f  ; Magic number indicating the presence of the command-line
+		jne short .cmdline_done
+		mov si, [si]  ; Follow the pointer to get the binning of the command line.
+.cmdline_next:	lodsb
+		test al, al
+		jz short .cmdline_done
+		int 0x10  ; Print character in AL.
+		jmp short .cmdline_next
+.cmdline_done:	mov al, ')'
+		int 0x10  ; Print character in AL.
+		mov al, ' '
 		int 0x10  ; Print character in AL.
 		ukh_a20_gate_al 0  ; A20 gate direction: disable.
 		sti  ; Only after the call to ukh_a20_gate_far.
@@ -34,6 +47,6 @@
 		int 0x10  ; Print character in AL.
 		int 0x19  ; Reboot.
 
-message:	db 'Welcome to testk1! ', 0
+message:	db 'Welcome to testk1! (', 0
 
 ukh_end

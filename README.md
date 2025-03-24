@@ -64,8 +64,9 @@ The UKH load protocol for the 32-bit kernel (code32):
 * ESP is set to 0x10000, this gives the program an initial stack of 0x10000-0x600 == 0xfa00 == 64000 bytes after the BIOS data area.
 * EAX, EBX, ECX, EDX, ESI, EDI and EBP are set to 0.
 * CS is a read-execute full 4 GiB linear code segment, DS, ES, FS, GS and SS are the same read-write full 4 GiB linear data segment. Actual available memory may be less.
-* If there was a kernel command line, word [0x90020] is set to 0xa33f, and dword [0x90022] points to the command line (NUL-terminated byte string).
-  This is compatible with Linux kernel load protocol <=2.01, in which the pointer value is 0x90000 + word [0x90022].
+* If there was a kernel command line, word [0x90020] is set to 0xa33f, and dword [0x90022] points to the command line (NUL-terminated byte string). The high word of the dword is always 0.
+  * This is compatible with Linux kernel load protocol <=2.01, in which the pointer value is 0x90000 + word [0x90022].
+  * Some bootloaders prepend a string to the kernel command line, for example GRUB 1 0.97 and GRUB4DOS prepend the pathname and the space (so the command line will have all the arguments of the *kernel* command), and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename and a space. QEMU 2.11.1 doesn't prepend anything.
 * The initial GDT is stored as 0x18 bytes at linear address 0x90000.
 * The bottom 16 bits of CR0 (i.e. the MSW) is 0x0001 (bit 0 PE is 1, the high 15 bits are 0).
 * The BIOS drive number (or 0xff if unknown) is available at byte [0x90007]. It is unknown for the Linux load protocol, unknown for Multiboot via QEMU (unused, QEMU recognizes Linux first), known for Multiboot via GRUB, and known for chain.
