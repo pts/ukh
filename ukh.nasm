@@ -586,9 +586,9 @@ bits 32
 linux_entry:  ; Setup registers and jump to kernel. We assume that already IF=0 (cli) and DF=0 (cld).
 		; Move code at KERNELSEG<<4 forward by 3 sectors. Copy the data backward (descending), because the destination comes after the source, and they may overlap.
 		std
-		mov esi, (KERNELSEG<<4)+((code32.end-code32-1-3*0x200)&~3)
-		mov edi, (KERNELSEG<<4)+((code32.end-code32-1-3*0x200)&~3)+(3*0x200)
-		mov ecx, (code32.end-code32+3-3*0x200)>>2
+		mov esi, (KERNELSEG<<4)+((code32.padded_end-code32-1-3*0x200)&~3)
+		mov edi, (KERNELSEG<<4)+((code32.padded_end-code32-1-3*0x200)&~3)+(3*0x200)
+		mov ecx, (code32.padded_end-code32+3-3*0x200)>>2
 		rep movsd
 		cld
 		; Copy 3 sectors from (INITSEG<<4)+2*0x200 to KERNELSEG<<4.
@@ -687,10 +687,11 @@ bits 16
 bits UKH_BITS
 
 %macro ukh_end 0
+  code32.end:
   %if $-boot_sector<0xa00  ; File size must be at least 5 sectors (0xa00 == 2560 bytes) for the old Linux load protocol.
     times 0xa00-($-boot_sector) db 0
   %endif
-  code32.end:  ; !!! Move it earlier, but not everywhere.
+  code32.padded_end:  ; Use size based on this for some short copies.
 %endm
 
 %ifdef __UKH_PAYLOAD_FILE
