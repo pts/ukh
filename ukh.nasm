@@ -100,6 +100,8 @@ KERNELSEG equ 0x1000
 INITSEG equ 0x9000  ; We assume that BXS_SIZE bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
 BOOT_ENTRY_ADDR equ 0x7c00
 
+org (KERNELSEG<<4)-BXS_SIZE  ; This is for the payload .nasm source. The code in ukh.nasm works with arbitrary `org', because it always subtracts boot_sector etc.
+
 LOADFLAG_READ:
 .HIGH: equ 1 << 0
 
@@ -653,7 +655,9 @@ bits 16
   %define UKH_BITS 32
   %macro ukh_real_mode 0
     %if UKH_BITS==32
-      call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; !!! ukh_real_mode_far. call setup_sector.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE
+      ;call setup_sector.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far.
+      ;call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far. Works independently of `org'.
+      call 0x90232  ; ukh_real_mode_far. This only works with `org (KERNELSEG<<4)-BXS_SIZE'.
       %define UKH_BITS 16
       bits 16
     %else
@@ -663,7 +667,8 @@ bits 16
   %endm
   %macro ukh_protected_mode 0
     %if UKH_BITS==16
-      call INITSEG:0x230  ; !!! ukh_protected_mode_far.
+      ;call INITSEG:0x230  ; ukh_protected_mode_far.
+      call 0x9000:0x230  ; ukh_protected_mode_far.
       %define UKH_BITS 32
       bits 32
     %else
@@ -671,10 +676,11 @@ bits 16
       times -1 nop
     %endif
   %endm
-  %macro ukh_a20_gate_al 1  ; Ruins AL.
+  %macro ukh_a20_gate_al 1  ; Disables the A20 gate. We must do this in 16-bit mode, with interrupts disabled. Ruins AL.
     %if UKH_BITS==16
       mov al, %1  ; A20 gate direction.
-      call INITSEG:4  ; !!! ukh_a20_gate_far.  ; Disable the A20 gate. We must do this in 16-bit mode, with interrupts disabled.
+      ;call INITSEG:4  ; ukh_a20_gate_far.
+      call 0x9000:4  ; ukh_a20_gate_far.
     %else
       %error ERROR_MUST_BE_IN_REAL_MODE
       times -1 nop
