@@ -24,6 +24,11 @@
 		jmp short .msg_next
 .msg_done:	mov cx, 0x9000
 		mov ds, cx
+		mov al, [7]  ; BIOS drive number, populated by UKH. 0xff if unknown (e.g. with the Linux load protocol).
+		call drive_number_to_char_real
+		int 0x10  ; Print character in AL.
+		mov al, '('
+		int 0x10  ; Print character in AL.
 		mov si, 0x22  ; Address of NUL-terminated kernel command line string.
 		cmp word [si-2], 0xa33f  ; Magic number indicating the presence of the command-line
 		jne short .cmdline_done
@@ -47,6 +52,19 @@
 		int 0x10  ; Print character in AL.
 		int 0x19  ; Reboot.
 
-message:	db 'Welcome to testk1! (', 0
+drive_number_to_char_real:  ; Converts BIOS drive number to a character ('a' is first floppy, 'C' is first HDD, '?' is unknown, e.g. 0xff) in AL.
+		cmp al, 'z'-'a'
+		ja short .not_floppy
+		add al, 'a'
+		ret
+.not_floppy:	sub al, 0x80
+		cmp al, 'Z'-'C'
+		ja short .not_hdd
+		add al, 'C'
+		ret
+.not_hdd:	mov al, '?'
+		ret
+
+message:	db 'Welcome to testk1! ', 0
 
 ukh_end

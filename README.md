@@ -100,8 +100,7 @@ Testing notes:
 
 TODOs:
 
-* Pass the BIOS drive number for both Multiboot and non-Multiboot protocols at byte [0x90007] (already 0xff by default), or 0xff if unknown.
-* Move the kernel command line to linear address 0x90400. That's the smallest, because of the .protected_mode_far and .real_mode library functions.
+* Copy the kernel command line to linear address 0x903e0. That's the smallest, because earlier bytes are used by the .protected_mode_far and .real_mode library functions.
 * Compress the 32-bit payload with `upxbc --flat32`. This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work.
 * Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kernel old protocol.
 * Add progress indicator to the LZMA decompressor.

@@ -90,6 +90,7 @@ OUR_LINUX_BOOT_PROTOCOL_VERSION equ 0x201  ; 0x201 is the last one which loads e
 
 MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
+MULTIBOOT_INFO_BOOTDEV equ 1<<1
 MULTIBOOT_INFO_CMDLINE equ 1<<2
 OUR_MULTIBOOT_FLAGS equ MULTIBOOT_FLAG_AOUT_KLUDGE
 OUR_MULTIBOOT_LOAD_ADDR equ 0x100000  ; The minimum value is 0x100000 (1 MiB), otherwise GRUB 1 0.97 fails with: Error 7: Loading below 1MB is not supported
@@ -152,7 +153,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; The GDT has to remain valid until the next lgdt instruction (potentially long), so we'll keep it at linear address 0x90000.
 .code:		cld
 		call .code2
-.here:
+.here:		; Not reached, .code2 will pop the return address.
 ; API function ukh_a20_gate_far. Call it from real mode at 0x9000:4.
 .a20_gate_far:	jmp near setup_sector.a20_gate_far_low
 .drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
@@ -207,6 +208,9 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov al, 'b'
 		int 0x10  ; Print character in AL.
 
+		; Compare a few bytes of setup_sector to
+		; .copy_of_setup_sector. This is a best effort check to see
+		; if the bootloader has loaded setup_sector.
 		mov ds, cx  ; DS := 0.
 		mov es, cx  ; ES := 0.
 		mov si, BOOT_ENTRY_ADDR+.copy_of_setup_sector-.start
@@ -215,7 +219,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov cx, (.copy_of_setup_sector.end-.copy_of_setup_sector)>>1
 		repe cmpsw
 		je short .cmp_matches
-		mov al, 'F'  ; Indicate fatal error: `bF' means that the bootloader has loaded only he first sector.
+		mov al, 'F'  ; Fail with fatal error: `bF' means that the bootloader has loaded only he first sector.
 		int 0x10
 		jmp short .halt
 .cmp_matches:
@@ -225,21 +229,23 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sector; AL is character to print; DL is the BIOS drive number.
 		xor bx, bx  ; Set up error message.
 		int 0x10  ; Print character in AL.
-		mov al, dl  ; Good: YSLINUX 4.07 boot, GRUB4DOS chainloader and FreeDOS boot sector pass the BIOS drive number (e.g. 0x80 for first HDD) in DL.
+		mov al, dl  ; BIOS drive number. !! Remove these debug prints (but some of them indicate progress).
 		int 0x10  ; Print BIOS boot drive character. !! No need to print these.
 
 		; Set up some segments and stack.
 		mov ds, cx  ; After this (until we break DS again) global variables work.
 		mov es, [.initseg_const-.start]  ; ES := INITSEG.
 		cli
-		mov ax, INITSEG
-		mov ss, ax
+		push es
+		pop ss  ; SS := INITSEG.
 		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
-		; Copy BXS_SIZE bytes from DS:SI (actually loaded boot_sector+setup_sector) to INITSEG<<4 == 0x90000. There is no overlap.
+		; Copy BXS_SIZE bytes (2 sectors) from DS:0 (actually loaded boot_sector+setup_sector) to INITSEG:0. There is no overlap.
 		xor si, si
 		xor di, di
+		; Good: SYSLINUX 4.07 *boot*, GRUB4DOS *chainloader*, GRUB *kernel* with Multiboot only and the DOS boot sectors pass the BIOS drive number (e.g. 0x80 for first HDD) in DL. (Or in BL, but we've already copied it to DL.)
+		mov [si+.drive_number-.start], dl  ; Save BIOD drive number to its final UKH boot protocol location.
 		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
 		rep movsw
 		jmp INITSEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to KERNELSEG). Needed for the NTLDR load protocol.
@@ -545,15 +551,19 @@ bits 16
 bits 32
 
 %ifdef UKH_MULTIBOOT
-  multiboot_entry:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
+  multiboot_entry:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled, no stack (ESP is invalid). Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
-		; We don't have have a stack (ESP is invalid).
 		cld
 		;cmp eax, 0x2badb002  ; We ignore this Multiboot signature.
 		;xchg ebp, eax  ; EBP := multiboot signature; EAX := junk.
+		mov esi, OUR_MULTIBOOT_LOAD_ADDR
+		test byte [ebx], MULTIBOOT_INFO_BOOTDEV
+		jz short .boot_drive_done
+		mov al, [ebx+3*4+3]  ; Boot drive number in multiboot_info.boot_device.
+		mov [esi+boot_sector.drive_number-boot_sector], al  ; Save BIOD drive number to its final UKH boot protocol location.
+  .boot_drive_done:
 
 		; Copy the first 2 sectors to INITSEG.
-		mov esi, OUR_MULTIBOOT_LOAD_ADDR
 		mov edi, INITSEG<<4
 		mov ecx, BXS_SIZE>>2
 		rep movsd
