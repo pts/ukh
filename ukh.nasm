@@ -19,7 +19,6 @@
 ; !! Instead of halting, wait for keypress and reboot.
 ; !! See how much better memtest86+-5.01.bin compresses (uncompressed size is about 32 KiB larger).
 ; !! Simplfy jumps in upxbc --flat32 decompress and lxunfilter functions.
-; !! Make UKH a few bytes shorter than 2 sectors, not aligning code32 to a multiple of 0x200.
 ;
 ; The Universal Kernel Header (UKH) is a 1024-byte header that can be added
 ; in front of i386+ 32-bit protected mode kernel images to make them
@@ -79,6 +78,11 @@
 ; * The initial GDT is stored as 0x18 bytes at linear address 0x90000.
 ; * The bottom 16 bits of CR0 (i.e. the MSW) is 0x0001 (bit 0 PE is 1, the high 15 bits are 0).
 ; * The BIOS drive number (or 0xff if unknown) is available at byte [0x90007]. It is unknown for the Linux load protocol, unknown for Multiboot via QEMU (unused, QEMU recognizes Linux first), known for Multiboot via GRUB, and known for chain.
+; * Calling software interrupts (such as BIOS video services wit int 10h) is not supported in protected mode. Call it like this: call ukh_real_mode, do sti, do the *int ...* instruction, and then call ukh_protected_mode_far.
+; * UKH provides the following API functions:
+;   * API function ukh_real_mode. Switches from 32-bit protected mode to real mode. Call it from 32-bit protected mode at 0x90232. Doesn't enable (sti) or disable (cli) interrupts.
+;   * API function ukh_protected_mode_far. Switches from real mode to 32-bit protected mode. Call it from real mode as far call at 0x9000:0x230. Disables interrupts (cli).
+;   * API function ukh_a20_gate_far. Call it from real mode with interrupts disabled as far call at 0x9000:4. AL=0 disables the A20 gate (allows less than 1 MiB of memory), AL=1 enables the A20 gate.
 ;
 ; Limitations of UKH:
 ;
@@ -183,9 +187,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
 		; The GDT has to remain valid until the next lgdt instruction (potentially long), so we'll keep it at linear address 0x90000.
 .code:		cld
-		call .here
-.here:		pop si  ; SI := actual offset of .here.
-		jmp short .code2
+		call .code2
+.here:
+; API function ukh_a20_gate_far. Call it from real mode at 0x9000:4.
+.a20_gate_far:	jmp near setup_sectors.a20_gate_far_low
 .drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 		assert_at .gdt+8  ; End if first GDT entry.
 ..@KERNEL_CS: equ $-.gdt
@@ -198,7 +203,8 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@BACK_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sectors), limit 4GiB-1, granularity 0x1000.
 
 .gdt_end:	assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
-.code2:		sub si, byte .here-.start  ; SI := actual offset of .start.
+.code2:		pop si  ; SI := actual offset of .here.
+		sub si, byte .here-.start  ; SI := actual offset of .start.
 		mov ax, 0xe00+'?'  ; Set up error message.
 		mov cx, cs
 		test cx, cx
@@ -394,11 +400,42 @@ setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded
 
 cpu 386
 
-; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
-.kernel_version_string: db 'memtest86+-5.01', 0  ; !! Make this configurable. !! Pad it.
-%if $-.start<0x30
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
-%endif
+
+; API function ukh_protected_mode_far. Call it from real mode at 0x9000:0x230.
+.protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to INITSEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
+		jmp short .protected_mode_far_low
+
+; API function ukh_real_mode. Call it from 32-bit protected mode at 0x90232.
+.real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS and SS to KERNELSEG. Doesn't enable (sti) or disable (cli) interrupts. The caller may enable interrupts after the call. Keeps all general-purpose registers intact. Ruins EFLAGS.
+bits 32
+		xchg eax, [esp]
+		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
+		rol eax, 16
+		shl ax, 12
+		rol eax, 16
+		xchg eax, [esp]
+		push eax  ; Converted linear address in EAX to real-mode segment:offset. On the top of the stack is the backup copy of EAX, below (i.e. higher address) is the real-mode segment:offset result of the conversion.
+		;jmp ..@INIT16_CS:.real1-boot_sector
+		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
+.real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
+bits 16
+		mov eax, cr0
+		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
+		mov cr0, eax
+		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
+		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment.
+.real2:  ; We are in real mode now in terms of CS.
+		mov ax, KERNELSEG
+		mov ds, ax
+		mov es, ax
+		mov fs, ax
+		mov gs, ax
+		xor ax, ax
+		mov ss, ax
+		pop eax  ; Restore.
+		;sti  ; Give the caller a chance to call .a20_gate while interrupts are still disabled.
+		retf
 
 .code:  ; The 16-bit Linux entry point jumps here from setup_sectors.start.
 
@@ -423,45 +460,17 @@ cpu 386
 		out 0x70, al
 %endif
 		mov al, 1  ; A20 gate direction: enable.
-		call .a20_gate  ; Enable the A20 gate. We must do this in 16-bit mode.
+		push cs  ; Simulate for call.
+		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in 16-bit mode.
 		xor ax, ax
 		mov ss, ax
 		mov esp, 0xfffc  ; Aligned to 4. It's simpler to convert if we keep ESP 16-bit only (i.e. we never put 0x10000 to it). !! Maybe we can still do it if we pop early in .protected_mode_far.
 
-%if 1  ; %ifdef MULTIBOOT  ; No room for these tests with multiboot.
-		push cs
+		push cs  ; Simulate far call.
 		push strict word chain_entry-boot_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
-  .jmp_offset: equ $-2
+.jmp_offset: equ $-2
 		;jmp short .protected_mode_far  ; Fall through.
-%else
-		mov ax, 0xe00+'S'
-		xor bx, bx
-		int 0x10  ; Print character in AL.
-		push cs
-		call .protected_mode_far
-  bits 32
-		mov word [0xb8000], 0x1700|'P'  ; Write to the top left corner to the text screen. It works.
-		call .real_mode
-  bits 16
-		;mov bx, 0xb800
-		;mov es, bx
-		;mov word [es:2], 0x1700|'Q'  ; Write just after the top left corner to the text screen. It works.
-		;cli
-		;hlt
-		mov ax, 0xe00+'R'
-		xor bx, bx  ; Set up printing.
-		int 0x10  ; Print character in AL. !! Strange: changes the video mode instead in QEMU. Why
-		mov al, 0  ; A20 gate direction: disable.
-		call .a20_gate  ; Enable the A20 gate. We must do this in 16-bit mode.
-		xor ax, ax
-		int 0x16  ; Wait for user keypress. Works.
-		int 0x19  ; Reboot.
-		; !! Disable the A20 gate. What does GRUB 1 0.97 do?
-  .jmp_offset: dw 0
-%endif
-
-.protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to INITSEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
-bits 16
+.protected_mode_far_low:
 		cli
 		; Magic to convert a real-mode segment*16+offset address to a linear address in dword [ESP], without modifying any general-purpose registers. (It modifies EFLAGS.)
 		xchg eax, [esp]
@@ -495,36 +504,6 @@ bits 16
 .gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
 
-.real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS and SS to KERNELSEG. Enables interrupts (sti). Keeps all general-purpose registers intact. Ruins EFLAGS.
-bits 32
-		xchg eax, [esp]
-		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
-		rol eax, 16
-		shl ax, 12
-		rol eax, 16
-		xchg eax, [esp]
-		push eax  ; Converted linear address in EAX to real-mode segment:offset. On the top of the stack is the backup copy of EAX, below (i.e. higher address) is the real-mode segment:offset result of the conversion.
-		;jmp ..@INIT16_CS:.real1-boot_sector
-		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
-.real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
-bits 16
-		mov eax, cr0
-		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
-		mov cr0, eax
-		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
-		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment.
-.real2:  ; We are in real mode now in terms of CS.
-		mov ax, KERNELSEG
-		mov ds, ax
-		mov es, ax
-		mov fs, ax
-		mov gs, ax
-		xor ax, ax
-		mov ss, ax
-		pop eax  ; Restore.
-		sti
-		retf
-
 ; Enables (AL == 1, no wraparound at 1 MiB) or disables (AL == 0, wraparound
 ; at 1 MiB) the A20 gate. Must be called in real mode (because it calls an
 ; interrupt: int 15h). Ruins: AX, CX, DX.
@@ -544,7 +523,8 @@ bits 16
 ; the keyboard controller.
 ;
 ; !! TODO(pts): Replace the logic with http://wiki.osdev.org/A20_Line#Final_code_example .
-.a20_gate:  ; First, try the BIOS int 15h call.
+.a20_gate_far_low:
+		; First, try the BIOS int 15h call.
 .try_int15h:	cmp al, 1  ; CF := is_zero(AL).
 		mov ax, 0x2401
 		sbb al, 0  ; AX := 0x2400 if DL is 0 (disable), otherwise 0x2401 (enable).
@@ -555,7 +535,7 @@ bits 16
 		jc short .try_port92h  ; Jump on failure.
 		test ah, ah
 		jne short .try_port92h  ; Jump on failure.
-		ret  ; This works for QEMU 2.11.1.
+		retf  ; This works for QEMU 2.11.1.
 .try_port92h:  ; Try to switch gateA20 using PORT92, the "Fast A20 and Init" register.
 		mov ah, dl  ; AH := direction.
 		mov dx, 0x92
@@ -590,7 +570,7 @@ bits 16
 		mov al, 0xff
 		out 0x64, al  ; K_CMD.
 		call .gloop1
-		ret
+		retf
 .gloop1:	in al, 0x64  ; K_STATUS.
 		cmp al, 0xff
 		jz short .gloop2ret
@@ -601,8 +581,10 @@ bits 16
 		jz short .gloop2ret
 		in al, 0x60  ; K_RDWR.
 		jmp short .gloop2
-.gloop2ret:	ret
+.gloop2ret:	retf
 
+; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
+.kernel_version_string: db 'memtest86+-5.01', 0  ; !! Make this configurable. !! Pad it.
 
 %ifdef MULTIBOOT
 		times BXS_SIZE-($-boot_sector)-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
@@ -713,52 +695,26 @@ bits 32
 		incbin MEMTEST86PLUS5_BIN, 0xa00
 %else
   bits 32
-  .back_to_real:  ; Switch back from protected mode to real mode. Code based on prot_to_real in stage2/asm.S in GRUB 1 0.97-29ubuntu68
-		;cli  ; Not needed, already done.
-		;mov esp, KERNELSEG<<4   ; Not needed, it already has this value. The value will be useful as SS:SP in real mode as well.
-		;lgdt [.real_gdtr+((KERNELSEG<<4)-code32)]  ; Equivalent but longer than below. This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment.
-		lgdt [byte esp+4+.real_gdtr-code32]  ; This seems to be needed, because the `mov cr0, eax' to leave protected mode works only in a 16-bit code segment. Without -code32 and byte it actually happens to work, because KERNELSEG<<4 is a multiple of 0x100.
-		dw 0xea66, 0, .RM_REAL1_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
-  .real_gdt: equ $-8  ; Arbitrary values in the first segment descriptor.
-  .RM_REAL1_CS: equ $-.real_gdt
-  ;.real1_linear: equ (INITSEG<<4)+.real1-boot_sector  ; Linear address of .real1, as a NASM number (not label-based).
-		dw 0xffff, code32.real1_linear&0xffff, 0x9e00|((code32.real1_linear>>16)&0xff), 0x8f|((code32.real1_linear>>24)&0xff)<<8  ; Segment .RM_CS == 8. 16-bit, code, read-execute, base .real1, limit 4GiB-1, granularity 0x1000.
-  .real_gdt.end:
-  .real_gdtr:	dw .real_gdt.end-.real_gdt-1  ; GDT limit.
-		dd .real_gdt+((KERNELSEG<<4)-code32)  ; GDT base.
-
-  .tmp_real1:  ; Now we are still in protected mode, but all segment registers point to 16-bit segments.
-  .real1_linear: equ (KERNELSEG<<4)+code32.tmp_real1-code32  ; Linear address of code32.tmp_real1, as a NASM number (not label-based).
-  bits 16  ; CS points to a 16-bit segment.
-		mov eax, cr0
-		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
-		mov cr0, eax
-		xor eax, eax
-		xor esp, esp  ; This is needed (after .now_real) for subsequent QEMU 2.11.1 (and SeaBIOS) int 10h calls (but not for int 16h or int 19h), `mov sp 0' is no enough. This may be a limitation of SeaBIOS.
-		;lmsw ax  ; BUGFIX: This doesn't work instead of modifyingc CR0, .tmp_real2 won't be reached. Why? (Ask on stackoverflow.com.)
-		;o32 jmp KERNELSEG:dword .tmp_real2-code32  ; 8 bytes: 2 opcode, 4 offset, 2 segment.
-		jmp KERNELSEG:.tmp_real2-code32  ; 5 bytes: 1 opcode, 2 offset, 2 segment. !! This only works if .tmp_real2 is close to the beginning of code32.
-  .tmp_real2:  ; We are in real mode now.
-		;xor ax, ax  ; No need, AX is already 0.
-		mov ds, ax
-		mov es, ax
-		mov fs, ax
-		mov gs, ax
-		mov ss, ax
-
+		mov word [0xb8000], 0x1700|'1'  ; Write to the top left corner to the text screen. It works.
+		call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far. call setup_sectors.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE
+  bits 16
 		mov bx, 0xb800
 		mov es, bx
-		mov word [es:2], 0x1700|'Q'  ; Write just after the top left corner to the text screen. It works.
-
-		sti
-  .now_real:  ; Real-mode kernel entry point CS=0x1000, AX=0, DS=ES=FS=GS=SS=0, SP=0 (stack available between 0x600 and 0x10000), IF=1 (sti).
-		mov ax, 0xe00+'r'
+		mov word [es:2], 0x1700|'2'  ; Write just after the top left corner to the text screen. It works.
+		call INITSEG:0x230  ; ukh_protected_mode_far.
+  bits 32
+		mov word [0xb8004], 0x1700|'3'  ; Write just 2 characetrs after the top left corner to the text screen. It works.
+		call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far. call setup_sectors.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE
+  bits 16
+		mov ax, 0xe00+'R'
 		xor bx, bx  ; Set up printing.
 		int 0x10  ; Print character in AL. !! Strange: changes the video mode instead in QEMU. Why
+		mov al, 0  ; A20 gate direction: disable.
+		call INITSEG:4  ; ukh_a20_gate_far.  ; Disable the A20 gate. We must do this in 16-bit mode, with interrupts disabled.
+		sti  ; Only after the call to ukh_a20_gate_far.
 		xor ax, ax
 		int 0x16  ; Wait for user keypress. Works.
 		int 0x19  ; Reboot.
-		; !! Disable the A20 gate. What does GRUB 1 0.97 do?
 %endif
 
 		%if $-boot_sector<0xa00  ; File size must be at least 5 sectors (0xa00 == 2560 bytes) for the old Linux load protocol.
