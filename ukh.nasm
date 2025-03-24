@@ -129,7 +129,6 @@ MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
 MULTIBOOT_INFO_CMDLINE equ 1<<2
 OUR_MULTIBOOT_FLAGS equ MULTIBOOT_FLAG_AOUT_KLUDGE
-OUR_MULTIBOOT_STARTUP_CODE_SIZE equ 0x84
 OUR_MULTIBOOT_LOAD_ADDR equ 0x100000  ; The minimum value is 0x100000 (1 MiB), otherwise GRUB 1 0.97 fails with: Error 7: Loading below 1MB is not supported
 OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 
@@ -250,7 +249,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov di, BOOT_ENTRY_ADDR+setup_sectors-.start
 		mov cx, (.copy_of_setup_sectors.end-.copy_of_setup_sectors)>>1
 		repe cmpsw
-		je .cmp_matches
+		je short .cmp_matches
 		mov al, 'F'  ; Indicate fatal error: `bF' means that the bootloader has loaded only he first sector.
 		int 0x10
 		jmp short .halt
@@ -295,7 +294,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov ax, KERNELSEG
 		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4; AX == KERNELSEG.
 		cmp cx, ax
-		jae .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
+		jae short .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
 .setup_backward_copy:  ; Copy them backward (descending), because the destination comes after the source, and they may overlap.
 		neg dx  ; DX := -(0x200)>>4. Change copy direction to descending.
 		add ax, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust destination segment to point to the last sector.
@@ -327,16 +326,11 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 
-		push ss  ; INITSEG (== 0x9000).
-		pop ds
-		push ss  ; INITSEG (== 0x9000).
-		pop es
-		cli
-		jmp INITSEG:(setup_sectors.ck-boot_sector)
+		jmp (INITSEG+0x20):(setup_sectors.setup_linux_and_chain-setup_sectors)
 
 		times (.start-$)&1 nop  ; Align to even.
 .copy_of_setup_sectors:  ; Extra bytes from the beginning of setup_sectors, so that we can figure out that it has been loaded (not only the boot_sector).
-		db 0xeb, setup_sectors.code-(setup_sectors.jump+2)
+		db 0xeb, setup_sectors.setup_linux-(setup_sectors.jump+2)
 		db 'GdrS'  ; Like 'HdrS', but obfuscate it from hex editors.
 		dw OUR_LINUX_BOOT_PROTOCOL_VERSION
 		dd 0
@@ -345,7 +339,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .copy_of_setup_sectors.end:
 		times -((.copy_of_setup_sectors.end-.copy_of_setup_sectors)&1) nop  ; Fail if size is not even. Evenness needed by cmpsw above.
 
-		times 0x1f1-($-.start) db 0
+		times 0x1f1-($-.start) db '-'
 .linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sectors.linux_boot_header.end.
 		assert_fofs 0x1f1
 .setup_sects:	db 4  ; (read) The size of the setup in sectors. That is, the 32-bit kernel image starts at file offset (setup_sects+1)<<9. Must be 4 for compatibility with old-protocol Linux bootloaders (such as old LILO).
@@ -368,7 +362,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 
 setup_sectors:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
 .start:		assert_fofs 0x200
-.jump:		jmp short .code  ; (read) Jump instruction. Entry point.
+.jump:		jmp short .setup_linux  ; (read) Jump instruction. Entry point.
 		assert_fofs 0x202
 .header:	db 'HdrS'  ; (read) Protocol >=2.00 signature. Magic signature “HdrS”.
 		assert_fofs 0x206
@@ -424,7 +418,7 @@ bits 16
 		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
 		mov cr0, eax
 		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
-		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment.
+		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment. !!! Is this jump needed?
 .real2:  ; We are in real mode now in terms of CS.
 		mov ax, KERNELSEG
 		mov ds, ax
@@ -437,22 +431,18 @@ bits 16
 		;sti  ; Give the caller a chance to call .a20_gate while interrupts are still disabled.
 		retf
 
-.code:  ; The 16-bit Linux entry point jumps here from setup_sectors.start.
-
+.setup_linux:  ; The 16-bit Linux entry point jumps here from setup_sectors.start, as jmp INITSEG+0x20:0.
 %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
 		xor bx, bx
 		int 0x10  ; Print character in AL.
 %endif
-
-		cli ; no interrupts allowed
-		mov word [cs:.jmp_offset-setup_sectors], ((INITSEG<<4)&0xffff)+linux_entry-boot_sector
-		jmp INITSEG:.ck-boot_sector  ; Make `org 0' work. Otherwise CS:IP would remain: 0x9020:.ck-setup_sectors.
-.ck:		cld
-
-%ifndef MULTIBOOT  ; With Multiboot, we will do it in setup_32.
-		mov word [boot_sector.cl_offset_high_word-boot_sector], 9  ; word [0x90022]. boot_sector.cl_offset_high_word.
-%endif
+		add word [cs:.jmp_offset-setup_sectors], byte linux_entry-chain_entry  ; Change the protected mode entry point from chain_entry to linux_entry.
+.setup_linux_and_chain:
+		cli  ; No interrupts allowed. The Linux bootloader usually provides a valid stack, but we don't rely on it.
+		xor ax, ax
+		mov ss, ax
+		mov esp, 0xfffc  ; Aligned to 4. It's simpler to convert if we keep ESP 16-bit only (i.e. we never put 0x10000 to it). !! Maybe we can still do it if we pop early in .protected_mode_far.
 
 %if 1  ; !! What's wroong if we don't bother with NMI?
 		; now we want to move to protected mode ... !! Consider alternatives, such as how SYSLINUX 4.07 does it or how GRUB 1 0.97 does it.
@@ -462,33 +452,29 @@ bits 16
 		mov al, 1  ; A20 gate direction: enable.
 		push cs  ; Simulate for call.
 		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in 16-bit mode.
-		xor ax, ax
-		mov ss, ax
-		mov esp, 0xfffc  ; Aligned to 4. It's simpler to convert if we keep ESP 16-bit only (i.e. we never put 0x10000 to it). !! Maybe we can still do it if we pop early in .protected_mode_far.
 
 		push cs  ; Simulate far call.
-		push strict word chain_entry-boot_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
+		push strict word chain_entry-setup_sectors  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
 .jmp_offset: equ $-2
+		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
+		;lidt [cs:idtr-setup_sectors]
+		lgdt [cs:gdtr-setup_sectors]
 		;jmp short .protected_mode_far  ; Fall through.
 .protected_mode_far_low:
 		cli
 		push eax  ; Save.
-		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
-		;lidt [cs:idtr-boot_sector]
-		lgdt [cs:.gdtr-boot_sector]
 		mov eax, cr0  ; !! Save registers.
 		or al, 1  ; PE := 1.
 		mov cr0, eax
-		jmp short .flush_instr  ; Jump not strictly needed, but we play it safe.
-.flush_instr:	mov ax, ..@KERNEL_DS
+		mov ax, ..@KERNEL_DS
+		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+.prot_ret-boot_sector)  ; This is 8 bytes, without dword it jumps incorrectly. Jumps to .prot_ret (right below), activates protected mode.
+.prot_ret:
+bits 32
 		mov ds, ax
 		mov es, ax
 		mov ss, ax  ; Since the protected-mode SS is also zero-based, ESP remains valid.
 		mov fs, ax
 		mov gs, ax
-		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+.prot_ret-boot_sector)  ; This is 8 bytes, without dword it jumps incorrectly. Jumps to .prot_ret (right below), activates protected mode.
-.prot_ret:
-bits 32
 		pop eax  ; Restore.
 		; Magic to convert a real-mode segment*16+offset address to a linear address in dword [ESP], without modifying any general-purpose registers. (It modifies EFLAGS.)
 		xchg eax, [esp]
@@ -503,10 +489,6 @@ bits 32
 		; End of linear address conversion magic.
 		ret  ; This is already in protected mode, but the ret opcode is the same.
 bits 16
-
-; These data bytes have to be valid only for the duration of the lgdt or lidt instruction. The table entries have to remain valid until the next lgdt or lidt instruction (i.e. long).
-.gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
-		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
 
 ; Enables (AL == 1, no wraparound at 1 MiB) or disables (AL == 0, wraparound
 ; at 1 MiB) the A20 gate. Must be called in real mode (because it calls an
@@ -590,19 +572,31 @@ bits 16
 ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
 .kernel_version_string: db 'memtest86+-5.01', 0  ; !! Make this configurable. !! Pad it.
 
+bits 32
+
 %ifdef MULTIBOOT
-		times BXS_SIZE-($-boot_sector)-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE db 0
-		assert_fofs BXS_SIZE-OUR_MULTIBOOT_STARTUP_CODE_SIZE-OUR_MULTIBOOT_HEADER_SIZE
-  multiboot_entry:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
-  cpu 386
-  bits 32
+  multiboot_entry:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled. Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
-		; We may not have a stack (ESP is invalid).
+		; We don't have have a stack (ESP is invalid).
 		cld
 		;cmp eax, 0x2badb002  ; We ignore this Multiboot signature.
 		;xchg ebp, eax  ; EBP := multiboot signature; EAX := junk.
 
-		xor ecx, ecx  ; Empty command line by default.
+		; Copy the first 2 sectors to INITSEG.
+		mov esi, OUR_MULTIBOOT_LOAD_ADDR
+		mov edi, INITSEG<<4
+		mov ecx, BXS_SIZE>>2
+		rep movsd
+
+		lgdt [byte edi-BXS_SIZE+gdtr-boot_sector]  ; Make subsequent API call ukh_real_mode work. We don't need to reload the CS, DS etc. just yet.
+
+		; Copy code32 to KERNELSEG<<4.
+		mov esi, OUR_MULTIBOOT_LOAD_ADDR+BXS_SIZE
+		mov edi, KERNELSEG<<4
+		mov ecx, (code32.end-code32+3)>>2
+		rep movsd
+
+  .cmdline:	xor ecx, ecx  ; Empty command line by default.
 		test byte [ebx], MULTIBOOT_INFO_CMDLINE  ; multiboot_info.flags.
 		jz short .got_cmdline_length
 		mov esi, [ebx+4*4]  ; ESI: pointer to the command line from multiboot_info.cmdline.
@@ -623,19 +617,10 @@ bits 16
 		xor eax, eax
 		stosb  ; Add terminating NUL.
 
-		mov esi, OUR_MULTIBOOT_LOAD_ADDR+OUR_MULTIBOOT_STARTUP_CODE_SIZE+OUR_MULTIBOOT_HEADER_SIZE  ; Linear address of code32.
-		mov edi, KERNELSEG<<4
-		mov ecx, (code32.end-code32+3)>>2
-		rep movsd  ; We need this move, the memtest86+-5.x 32-bit kernel is not position-independent.
-
-		jmp short start_32  ; With Multiboot load protocol we don't copy, the kernel is already at its right place.
-  bits 16
-  cpu 8086
+		jmp short start_32
 %endif
 
 linux_entry:  ; Setup registers and jump to kernel. We assume that already IF=0 (cli) and DF=0 (cld).
-cpu 386
-bits 32
 		; Move code at KERNELSEG<<4 forward by 3 sectors. Copy the data backward (descending), because the destination comes after the source, and they may overlap.
 		std
 		mov esi, (KERNELSEG<<4)+((code32.end-code32-1-3*0x200)&~3)
@@ -660,27 +645,34 @@ start_32:  ; Linux, chain and Multiboot load protocols all end here.
 		times 8 push eax
 		popa  ; Set EAX, EBX, ECX, EDX, ESI, EDI and EBP to 0 (but not ESP). We do it for reproducibility.
 		jmp dword [esp]  ; This works even if non-Multiboot code jumps into .setup_regs_and_jump_to_kernel.
-
-		times (boot_sector.start-$)&3 nop  ; Align to multiple of 4.
 bits 16
 cpu 8086
 
+; These data bytes have to be valid only for the duration of the lgdt or
+; lidt instruction. The table entries have to remain valid until the next
+; lgdt or lidt instruction (i.e. long).
+;
+; We put this very late in setup_sectors, for the size saving in multiboot_entry.
+gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
+		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
+
 %ifdef MULTIBOOT
-  multiboot2:	assert_fofs BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE  ; If this fails, increase or decrease OUR_MULTIBOOT_STARTUP_CODE_SIZE by that amount.
-  .multiboot_align_check: times -(($-boot_sector.start)&3) nop  ; Check alignment of the .multiboot_v1 below. GRUN 1 0.97
-  .multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
+		times BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE-($-boot_sector) db '-'
+		assert_fofs BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE
+  multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
+  .multiboot.align_check: times -(($-boot_sector.start)&3) nop  ; Check alignment of the .multiboot_v1 below, in case the bootloader checks only aligned locations.
   .multiboot.magic: dd MULTIBOOT_MAGIC
   .multiboot.flags: dd OUR_MULTIBOOT_FLAGS
   .multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
-  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR-(multiboot_entry-.multiboot)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot came before load_addr.
+  .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(multiboot-boot_sector)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot.magic came before .multiboot.load_addr.
   .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for KERNELSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
-  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_entry
-  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+code32.end-multiboot_entry  ; No specific .bss to be cleared by the bootloader.
-  .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR
-  .multiboot_end:
-  .multiboot_size_check: assert_at .multiboot+0x20
+  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(code32.end-boot_sector)
+  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+(code32.end-boot_sector)  ; No specific .bss to be cleared by the bootloader.
+  .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(multiboot_entry-boot_sector)
+  .multiboot.end:
+  .multiboot.size_check: assert_at multiboot+0x20
 %else
-		times BXS_SIZE-($-boot_sector) db 0
+		times BXS_SIZE-($-boot_sector) db '-'
 %endif
 		assert_fofs BXS_SIZE
 setup_stack:  ; 0x200 bytes of stack from here.
