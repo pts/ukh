@@ -563,7 +563,7 @@ bits 16
 		in al, dx
 		cmp al, 0xff
 		jz short .try_keyboard  ; Skip the port92 code if it's unimplemented (read returns 0xff).
-		test cl, cl
+		test ah, ah
 		jz short .ga87
 		or al, 2  ; Set the ALT_A20_GATE bit.
 		jmp short .ga89
