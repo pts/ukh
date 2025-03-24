@@ -309,7 +309,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		assert_fofs 0x1f2
 .root_flags:	dw 0  ; (read, modify optional) If set, the root is mounted readonly.
 		assert_fofs 0x1f4
-.syssize_low:	dw (code32.end-code32+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but Linux kernel protocol <=2.01 supports zImage only, with its maximum size of 0x9000-0x200*(1+.setup_sects) bytes.
+.syssize_low:	dw (code32.end-code32+0xa00-BXS_SIZE+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but Linux kernel protocol <=2.01 supports zImage only, with its maximum size of 512 KiB.
 		assert_fofs 0x1f6
 .swap_dev:
 .syssize_high:	dw 0  ; (read) The high word size of the 32-bit code in 16-byte paras. For Linux kernel protocol prior to 2.04, the upper two bytes of the syssize field are unusable, which means the size of a bzImage kernel cannot be determined.
