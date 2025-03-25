@@ -15,7 +15,7 @@
 ;   stage2 binary to 0:0x8200. (It is smart enough to increase the segment
 ;   before the offset would reach 64 KiB.) It sets EBP to the LBA sector
 ;   number where it read the next sector from. Then it jumps to 0:0x8200.
-; * The next sector (512 bytes at offset 0x200, source in stage2/asm.S),
+; * The sector sector (512 bytes at offset 0x200, source in stage2/asm.S),
 ;   loaded by the first sector of stage2 to 0:0x8200 (also jumped there):
 ;   ```
 ;   .jump: jmp 0:0x8200+.code-jump  ; File offset 0x200. Jumps to 0:0x8270. This is to make every segment-offset combination work, and to skip over the header.
@@ -44,6 +44,8 @@
 ;   mov [dword 0x90dc], dl  ; Save DL to the variable boot_drive.
 ;   int 0x13  ; BIOS reset disk system.
 ;   ```
+; * Some other GRUB1 stage2 files (especially of PXE NBP == SYSLINUX boot
+;   .bs format) have more than 1 sector before the second sector.
 ;
 ; Mapping between GRUB devices (e.g. `(fd0)`) and BIOS drive numbers (GRUB
 ; boot_drive, saved_drive, current_drive).
@@ -64,7 +66,21 @@
 ;
 
 %define UKH_PAYLOAD_32
-%define UKH_VERSION_STRING 'grub1-0.97-ubuntu'
+%ifdef GRUB1
+  %define UKH_VERSION_STRING 'grub1-0.97-ubuntu'
+  %define INCBIN_BASE 0x200
+  %ifndef STAGE2_IN
+    %define STAGE2_IN 'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'
+  %endif
+%endif
+%ifdef GRUB4DOS0_4_4
+  %define UKH_VERSION_STRING 'grub4dos-0.4.4pts'
+  %define INCBIN_BASE 0x600
+  %ifndef STAGE2_IN
+    %define STAGE2_IN 'grub4dos.uncompressed.bs'
+  %endif
+%endif
+
 ;%define UKH_MULTIBOOT  ; Enabled by default.
 %include 'ukh.nasm'
 
@@ -77,16 +93,13 @@
   times -(%1)+$ times 0 nop
 %endm
 
-%ifndef STAGE2_IN
-  %define STAGE2_IN 'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'
-%endif
 
 kernel:		jmp strict short .code
 		times 3 nop
 		assert_at kernel+5
-		incbin STAGE2_IN, 0x200+5, 8-5
+		incbin STAGE2_IN, INCBIN_BASE+5, 8-5
 .install_partition: dd 0xffffff
-		incbin STAGE2_IN, 0x200+0xc, 0x70-0xc  ; Header.
+		incbin STAGE2_IN, INCBIN_BASE+0xc, 0x70-0xc  ; Header.
 		assert_at kernel+0x70
 .code:		or ebp, byte -1  ; Make sure install_second_sector is invalid.
 		mov dl, [ukh_drive_number_flat]  ; BIOS drive number set up by UKH.
@@ -126,7 +139,7 @@ kernel:		jmp strict short .code
 %if .grub1_codestart-(kernel+0x70)>0x7f
   %error ERROR_GLUE_CODE_TOO_LONG  ; Breaks the `add esi, byte ...' above.
 %endif
-		incbin STAGE2_IN, 0x270
+		incbin STAGE2_IN, INCBIN_BASE+0x70
 .grub1_end:
 
 ukh_end

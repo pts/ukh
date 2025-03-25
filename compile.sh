@@ -24,10 +24,13 @@ if ! test -f memtest86+-5.01-dist-nrv.bin; then
 fi
 
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs grub1_bs.nasm
-nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.multiboot.bin grub1.nasm
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -DGRUB1 -o grub1.multiboot.bin grub1.nasm
 "$upxbc" --upx=upx.pts --flat32 --lzma --prefix=0x470 -f -o grub1.lzma.badsize.bin grub1.multiboot.bin  # This will boot, but the UKH boot code would memmove(...) unnecessarily many bytes.
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DUKH_PAYLOAD_32_FILE="'grub1.lzma.badsize.bin'" -DUKH_PAYLOAD_FILE_SKIP=0x400 -DUKH_VERSION_STRING="'grub1-0.97-ubuntu'" -DUKH_MULTIBOOT -o grub1.lzma.bin ukh.nasm
 # "$upxbc" --upx=upx.pts --flat32 --ultra-brute --no-lzma --prefix=0x470 -f -o grub1.nrv.bin grub1.multiboot.bin  # Larger than with --lzma. Also the memmove(...) is unnecessarily large.
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'grub4dos.uncompressed.bs'" -DGRUB4DOS0_4_4 -o grub4dos4.multiboot.bin grub1.nasm
+"$upxbc" --upx=upx.pts --flat32 --lzma --prefix=0x470 -f -o grub4dos4.lzma.badsize.bin grub4dos4.multiboot.bin  # This will boot, but the UKH boot code would memmove(...) unnecessarily many bytes.
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DUKH_PAYLOAD_32_FILE="'grub4dos4.lzma.badsize.bin'" -DUKH_PAYLOAD_FILE_SKIP=0x400 -DUKH_VERSION_STRING="'grub4dos-0.4.4pts'" -DUKH_MULTIBOOT -o grub4dos4.lzma.bin ukh.nasm
 
 # Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -o testk1.multiboot.bin testk1.nasm  # Includes ukh.nasm.
@@ -52,13 +55,14 @@ truncate -s 1440K fd1440k.bin
 
 rm -f liigboot.zip
 cp -a liigboot.zip.orig liigboot.zip
-mdel -i liigboot.zip ::NETBOOTX.K
+mdel -i liigboot.zip ::NETBOOTX.K ::GRUB4DOS.BS
 mcopy -bsomp -i liigboot.zip testk1.multiboot.bin ::R.K
 mcopy -bsomp -i liigboot.zip memtest86+.nrv.kernel.bin ::M.MB  # Also multiboot.
 mcopy -bsomp -i liigboot.zip memtest86+.kernel.bin ::M.K
 mcopy -bsomp -i liigboot.zip memtest86+.lzma.kernel.bin ::ML.K  # Not multiboot, just for testing.
 #mcopy -bsomp -i liigboot.zip grub1.bs ::GRUB1.BS
 mcopy -bsomp -i liigboot.zip grub1.lzma.bin ::GRUB1.MB
+mcopy -bsomp -i liigboot.zip grub4dos4.lzma.bin ::G4D4.MB
 mcopy -bsomp -i liigboot.zip syslinux.cfg ::SYSLINUX.CFG
 mcopy -bsomp -i liigboot.zip menu.lst ::MENU.LST
 
