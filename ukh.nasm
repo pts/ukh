@@ -71,11 +71,11 @@
 
 ; --- Implementation for the UKH header (boot_sector: 0x200 bytes, setup_sector: 0x200 bytes).
 
-%macro assert_fofs 1
+%macro __ukh_assert_fofs 1
   times +(%1)-($-$$) times 0 nop
   times -(%1)+($-$$) times 0 nop
 %endm
-%macro assert_at 1
+%macro __ukh_assert_at 1
   times +(%1)-$ times 0 nop
   times -(%1)+$ times 0 nop
 %endm
@@ -157,7 +157,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ; API function ukh_a20_gate_far. Call it from real mode at 0x9000:4.
 .a20_gate_far:	jmp near setup_sector.a20_gate_far_low
 .drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
-		assert_at .gdt+8  ; End if first GDT entry.
+		__ukh_assert_at .gdt+8  ; End if first GDT entry.
 ..@KERNEL_CS: equ $-.gdt
                 dw 0xffff, 0, 0x9a00, 0xcf  ; Segment ..@KERNEL_CS == 8.    32-bit, code, read-execute, base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
 ..@KERNEL_DS: equ $-.gdt
@@ -167,7 +167,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ..@INIT16_CS: equ $-.gdt
 		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@BACK_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, granularity 0x1000.
 
-.gdt_end:	assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
+.gdt_end:	__ukh_assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
 .code2:		pop si  ; SI := actual offset of .here.
 		sub si, byte .here-.start  ; SI := actual offset of .start.
 		mov ax, 0xe00+'?'  ; Set up error message.
@@ -312,55 +312,55 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 
 		times 0x1f1-($-.start) db '-'
 .linux_boot_header:  ; https://docs.kernel.org/arch/x86/boot.html  . Until setup_sector.linux_boot_header.end.
-		assert_fofs 0x1f1
+		__ukh_assert_fofs 0x1f1
 .setup_sects:	db 4  ; (read) The size of the setup in sectors. That is, the 32-bit kernel image starts at file offset (setup_sects+1)<<9. Must be 4 for compatibility with old-protocol Linux bootloaders (such as old LILO).
-		assert_fofs 0x1f2
+		__ukh_assert_fofs 0x1f2
 .root_flags:	dw 0  ; (read, modify optional) If set, the root is mounted readonly.
-		assert_fofs 0x1f4
+		__ukh_assert_fofs 0x1f4
 .syssize_low:	dw (code32.end-code32+0xa00-BXS_SIZE+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but Linux kernel protocol <=2.01 supports zImage only, with its maximum size of 512 KiB.
-		assert_fofs 0x1f6
+		__ukh_assert_fofs 0x1f6
 .swap_dev:
 .syssize_high:	dw 0  ; (read) The high word size of the 32-bit code in 16-byte paras. For Linux kernel protocol prior to 2.04, the upper two bytes of the syssize field are unusable, which means the size of a bzImage kernel cannot be determined.
-		assert_fofs 0x1f8
+		__ukh_assert_fofs 0x1f8
 .ram_size:	dw 0  ; (kernel internal) DO NOT USE - for bootsect.S use only.
-		assert_fofs 0x1fa
+		__ukh_assert_fofs 0x1fa
 .vid_mode:	dw 0  ; (read, modify obligatory) Video mode control.
-		assert_fofs 0x1fc
+		__ukh_assert_fofs 0x1fc
 .root_dev:	dw 0  ; (read, modify optional) Default root device number. Neither GRUB 1 nor QEMU 2.11.1 set it.
-		assert_fofs 0x1fe
+		__ukh_assert_fofs 0x1fe
 .boot_flag:	dw BOOT_SIGNATURE  ; (read) 0xaa55 magic number.
-		assert_fofs 0x200
+		__ukh_assert_fofs 0x200
 
 setup_sector:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
-.start:		assert_fofs 0x200
+.start:		__ukh_assert_fofs 0x200
 .jump:		jmp short .setup_linux  ; (read) Jump instruction. Entry point.
-		assert_fofs 0x202
+		__ukh_assert_fofs 0x202
 .header:	db 'HdrS'  ; (read) Protocol >=2.00 signature. Magic signature “HdrS”.
-		assert_fofs 0x206
+		__ukh_assert_fofs 0x206
 .version:	dw OUR_LINUX_BOOT_PROTOCOL_VERSION  ; (read) Linux kernel protocol version supported. 0x201 is the last one which loads everything under 0xa0000.
-		assert_fofs 0x208
+		__ukh_assert_fofs 0x208
 .realmode_swtch: dd 0  ; (read, modify optional) Bootloader hook.
-		assert_fofs 0x20c
+		__ukh_assert_fofs 0x20c
 .start_sys_seg: dw KERNELSEG  ; (read) The load-low segment (0x1000), i.e. linear address >> 4 (obsolete). Ignored by both GRUB 1 0.97 and QEMU 2.11.1. In Linux kernel mode, they don't set root= either, and they don't pass the boot drive (boot_drive, saved_drive, current_drive, is saved_drive the result of `rootnoverify'?) number anywhere. Also GRUB 1 0.97 passes the boot drive in DL in `chainloader' (stage1) mode only.
-		assert_fofs 0x20e
+		__ukh_assert_fofs 0x20e
 .kernel_version: dw .kernel_version_string-setup_sector  ; (read) Pointer to kernel version string or 0 to indicate no version. Relative to setup_sector.
-		assert_fofs 0x210
+		__ukh_assert_fofs 0x210
 .type_of_loader: db 0  ; (write obligatory) Bootloader identifier.
-		assert_fofs 0x211
+		__ukh_assert_fofs 0x211
 .loadflags:	db 0  ; Linux kernel protocol option flags. Not specifying LOADFLAG.HIGH, so the the protected-mode code is will be loaded at 0x10000 (== .start_sys_seg<<4 == KERNELSEG<<4).
-		assert_fofs 0x212
+		__ukh_assert_fofs 0x212
 .setup_move_size: dw 0  ; (modify obligatory) Move to high memory size (used with hooks). When using protocol 2.00 or 2.01, if the real mode kernel is not loaded at 0x90000, it gets moved there later in the loading sequence. Fill in this field if you want additional data (such as the kernel command line) moved in addition to the real-mode kernel itself.
-		assert_fofs 0x214
+		__ukh_assert_fofs 0x214
 .code32_start:	dd 0  ; (modify, optional reloc) Bootloader hook. Unused.
-		assert_fofs 0x218
+		__ukh_assert_fofs 0x218
 .ramdisk_image: dd 0  ; initrd load address (set by bootloader). 0 (NULL) if no initrd.
-		assert_fofs 0x21c
+		__ukh_assert_fofs 0x21c
 .ramdisk_size: dd 0  ; initrd size (set by bootloader). 0 if no initrd.
-		assert_fofs 0x220
+		__ukh_assert_fofs 0x220
 .bootsect_kludge: dd 0  ; (kernel internal) DO NOT USE - for bootsect.S use only.
-		assert_fofs 0x224
+		__ukh_assert_fofs 0x224
 .heap_end_ptr:	dw 0  ; (write obligatory) Free memory after setup end.
-		assert_fofs 0x226
+		__ukh_assert_fofs 0x226
 .linux_boot_header.end:
 
 cpu 386
@@ -638,7 +638,7 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 
 %ifdef UKH_MULTIBOOT
 		times BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE-($-boot_sector) db '-'
-		assert_fofs BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE
+		__ukh_assert_fofs BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE
   multiboot:  ; Multiboot v1 header, 0x20 bytes. i386 is hardcoded.
   .multiboot.align_check: times -(($-boot_sector.start)&3) nop  ; Check alignment of the .multiboot_v1 below, in case the bootloader checks only aligned locations.
   .multiboot.magic: dd MULTIBOOT_MAGIC
@@ -650,11 +650,11 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
   .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+(code32.end-boot_sector)  ; No specific .bss to be cleared by the bootloader.
   .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(multiboot_entry-boot_sector)
   .multiboot.end:
-  .multiboot.size_check: assert_at multiboot+0x20
+  .multiboot.size_check: __ukh_assert_at multiboot+0x20
 %else
 		times BXS_SIZE-($-boot_sector) db '-'
 %endif
-		assert_fofs BXS_SIZE
+		__ukh_assert_fofs BXS_SIZE
 
 ; --- Now the comes the payload, at file offset 0x400.
 ;
@@ -664,15 +664,18 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 
 code32:  ; !!! Rename it to ukh_payload.
 
+ukh_drive_number_flat equ 0x90007  ; This only works with `org (KERNELSEG<<4)-BXS_SIZE'. Only valid in protected mode.
+ukh_real_mode_flat    equ 0x90232  ; This only works with `org (KERNELSEG<<4)-BXS_SIZE'. Only valid in protected mode.
+
 bits 16
 %ifdef UKH_PAYLOAD_32  ; i386+ 32-bit protected-mode payload.
   cpu 386
   %define UKH_BITS 32
   %macro ukh_real_mode 0
     %if UKH_BITS==32
-      ;call setup_sector.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far.
-      ;call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_far. Works independently of `org'.
-      call 0x90232  ; ukh_real_mode_far. This only works with `org (KERNELSEG<<4)-BXS_SIZE'.
+      ;call setup_sector.real_mode+(INITSEG<<4)-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_flat.
+      ;call $$+0x90232-(KERNELSEG<<4)+BXS_SIZE  ; ukh_real_mode_flat. Works independently of `org'.
+      call ukh_real_mode_flat  ; This only works with `org (KERNELSEG<<4)-BXS_SIZE'.
       %define UKH_BITS 16
       bits 16
     %else

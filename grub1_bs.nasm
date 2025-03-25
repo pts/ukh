@@ -5,62 +5,6 @@
 ; Compile with: nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -o grub1.bs grub1_bs.nasm
 ; !! incorrect: Run it with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel memtest86+.kernel.bin
 ;
-; The stage1 binary is 512 bytes, it can be written to a floppy boot sector
-; or HDD MBR sector. It leaves room for the BPB and the partition table.
-;
-; The stage2 binary starts with:
-;
-; * The first sector (512 bytes at offset 0, source in stage2/start.S),
-;   loaded by stage1 to 0:0x8000 (also jumped there) loads to rest of the
-;   stage2 binary to 0:0x8200. (It is smart enough to increase the segment
-;   before the offset would reach 64 KiB.) It sets EBP to the LBA sector
-;   number where it read the next sector from. Then it jumps to 0:0x8200.
-; * The next sector (512 bytes at offset 0x200, source in stage2/asm.S),
-;   loaded by the first sector of stage2 to 0:0x8200 (also jumped there):
-;   ```
-;   .jump: jmp 0:0x8200+.code-jump  ; File offset 0x200. Jumps to 0:0x8270. This is to make every segment-offset combination work, and to skip over the header.
-;   .padding: db 0
-;   .compat_version_major: db 3
-;   .compat_version_minor: db 2
-;   .install_partition: dd 0xfffffff
-;   .saved_entryno: dd 0  ; This variable is here only because of a historical reason.
-;   .stage2_id: db 0  ; STAGE2_ID_STAGE2.
-;   .force_lba: db 0
-;   .version_string) db '0.97', 0  ; Always 5 bytes.
-;   .config_file: db '/boot/grub/stage2', 0  ; File offset 0x217.
-;   .config_file_padding: times 0x70-($-.jump)  ; Leave some room for .config_file.
-;   .code:  ; File offset 0x270.
-;   bits 16
-;   cli
-;   xor ax, ax
-;   mov ds, ax
-;   mov ss, ax
-;   mov es, ax
-;   mov [dword 0x90e0], ebp  ; Save the sector number of the second sector (i.e. this sector) to the variable install_second_sector. This variable seems to be unused later.
-;   mov ebp, 0x1ff0  ; EBP := STACKOFF.
-;   mov esp, ebp
-;   sti
-;   mov [dword 0x90dc], dl  ; Save DL to the variable boot_drive. !!! Is it used?
-;   int 0x13  ; BIOS reset disk system.
-;   ```
-;
-; Mapping between GRUB devices (e.g. `(fd0)`) and BIOS drive numbers (GRUB
-; boot_drive, saved_drive, current_drive).
-;
-; * Floppy `(fd0)` is 0, `(fd1)` is 1 etc.
-; * HDD (hard disk) `(hd0)` is 0x80, `(hd1)` is 0x81 etc.
-;
-; Mapping between partition numbers and GRUB partition numbers
-; (install_partition, saved_partition, current_partition):
-;
-; * https://www.gnu.org/software/grub/manual/legacy/Naming-convention.html
-; * No partition (e.g. for a floppy `(fd0)`) is 0xffffff.
-; * Primary partition 1 (e.g. Linux `/dev/sd?1`, GRUB `(hd?,0)`) is 0x0ffff.
-; * Primary partition 2 (e.g. Linux `/dev/sd?2`, GRUB `(hd?,1)`) is 0x1ffff.
-; * Primary partition 3 (e.g. Linux `/dev/sd?3`, GRUB `(hd?,2)`) is 0x2ffff.
-; * Primary partition 4 (e.g. Linux `/dev/sd?4`, GRUB `(hd?,3)`) is 0x3ffff.
-; * Logical partition 5 (e.g. Linux `/dev/sd?5`, GRUB `(hd?,4)`) is 0x4ffff.
-;
 
 %macro assert_fofs 1
   times +(%1)-($-$$) times 0 nop
@@ -79,7 +23,7 @@ BOOT_SIGNATURE equ 0xaa55
 
 bs_boot_sector:  ; The bootloader loads the file to 0:0x7c00 and jumps to 0:0x7c00.
 .start:
-		or ebx, byte -1  ; Make sure install_second_sector is invalid.
+		or ebp, byte -1  ; Make sure install_second_sector is invalid.
 		;mov dl, 0x81
 		test dl, dl
 		jns .after_partition  ; For floppy, keep the install_partition == 0xffffff default.

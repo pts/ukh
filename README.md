@@ -114,3 +114,4 @@ TODOs:
 * Add GRUB 1 0.97-29ubuntu68 as an UKH image.
 * Add SYSLINUX 4.07 as an UKH image.
 * Add a modified Liigboot as an UKH image.
+* Add --ukh format support (an extension of --flat32, and later --flat16) to upxbc. This will be tricky, because the payload size is everywhere.
