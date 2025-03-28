@@ -543,7 +543,7 @@ bits 16
 		jz short .gloop2ret
 		in al, 0x60  ; K_RDWR.
 		jmp short .gloop2
-.gloop2ret:	retf
+.gloop2ret:	ret
 
 ; Can be anywhere in the first 0x800 bytes (setup_sects * 0x200 bytes).
 .kernel_version_string: db UKH_VERSION_STRING, 0
