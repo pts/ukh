@@ -502,8 +502,7 @@ bits 16
 .try_port92h:  ; Try to switch gateA20 using PORT92, the "Fast A20 and Init" register.
 		mov ah, dl  ; AH := direction.
 		mov dx, 0x92
-		mov al, 0xff  ; !! Is this needed before an `in'?
-		in al, dx
+		in al, dx  ; This always overwrites the previous value of AL. https://stackoverflow.com/q/79540330
 		cmp al, 0xff
 		jz short .try_keyboard  ; Skip the port92 code if it's unimplemented (read returns 0xff).
 		or al, 2  ; Set the ALT_A20_GATE bit.
