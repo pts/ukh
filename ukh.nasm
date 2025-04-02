@@ -161,7 +161,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ..@KERNEL_CS: equ $-.gdt
                 dw 0xffff, 0, 0x9a00, 0xcf  ; Segment ..@KERNEL_CS == 8.    32-bit, code, read-execute, base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
 ..@KERNEL_DS: equ $-.gdt
-                dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x18. 32-bit, data, read-write,   base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
+                dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x10. 32-bit, data, read-write,   base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
                 ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
                 ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
 ..@INIT16_CS: equ $-.gdt
@@ -436,7 +436,7 @@ bits 16
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
 		;lidt [cs:idtr-setup_sector]
 		lgdt [cs:gdtr-setup_sector]
-		;jmp short .protected_mode_far  ; Fall through.
+		;jmp short .protected_mode_far_low  ; Fall through.
 .protected_mode_far_low:
 		cli
 		push eax  ; Save.
@@ -469,7 +469,7 @@ bits 16
 
 ; Enables (AL == 1, no wraparound at 1 MiB) or disables (AL == 0, wraparound
 ; at 1 MiB) the A20 gate. Must be called in real mode (because it calls an
-; interrupt: int 15h). Ruins: AX, CX, DX.
+; interrupt: int 15h). Ruins: AX, DX.
 ;
 ; int 15h (AX == 0x2400: disable A20 gate; AX == 0x2401: enable A20 gate)
 ; documentation: https://fd.lod.bz/rbil/interrup/bios_vendor/152400.html and
@@ -504,7 +504,7 @@ bits 16
 		mov dx, 0x92
 		in al, dx  ; This always overwrites the previous value of AL. https://stackoverflow.com/q/79540330
 		cmp al, 0xff
-		jz short .try_keyboard  ; Skip the port92 code if it's unimplemented (read returns 0xff).
+		je short .try_keyboard  ; Skip the port92 code if it's unimplemented (read returns 0xff).
 		or al, 2  ; Set the ALT_A20_GATE bit.
 		test ah, ah
 		jnz short .bit_done
