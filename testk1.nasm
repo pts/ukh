@@ -52,15 +52,15 @@
 		int 0x10  ; Print character in AL.
 		int 0x19  ; Reboot.
 
-drive_number_to_char_real:  ; Converts BIOS drive number to a character ('a' is first floppy, 'C' is first HDD, '?' is unknown, e.g. 0xff) in AL.
-		cmp al, 'z'-'a'
+drive_number_to_char_real:  ; Converts BIOS drive number to a character ('0' is first floppy, 'A' is first HDD, '?' is unknown, e.g. 0xff) in AL.
+		cmp al, '9'-'0'
 		ja short .not_floppy
-		add al, 'a'
+		add al, '0'
 		ret
 .not_floppy:	sub al, 0x80
-		cmp al, 'Z'-'C'
+		cmp al, 'Z'-'A'
 		ja short .not_hdd
-		add al, 'C'
+		add al, 'A'
 		ret
 .not_hdd:	mov al, '?'
 		ret
