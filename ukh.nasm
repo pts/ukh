@@ -375,15 +375,15 @@ cpu 386
 		jmp short .protected_mode_far_low
 
 ; API function ukh_real_mode. Call it from 32-bit protected mode at 0x90232.
+		__ukh_assert_at boot_sector+0x232  ; Address part of the API.
 .real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS and SS to KERNELSEG. Doesn't enable (sti) or disable (cli) interrupts. The caller may enable interrupts after the call. Keeps all general-purpose registers intact. Ruins EFLAGS.
 bits 32
 		xchg eax, [esp]
-		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
 		rol eax, 16
 		shl ax, 12
 		rol eax, 16
-		xchg eax, [esp]
-		push eax  ; Converted linear address in EAX to real-mode segment:offset. On the top of the stack is the backup copy of EAX, below (i.e. higher address) is the real-mode segment:offset result of the conversion.
+		xchg eax, [esp]  ; Converted linear address in EAX to real-mode segment:offset.
+		push eax  ; Save.
 		;jmp ..@INIT16_CS:.real1-boot_sector
 		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
 .real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
@@ -455,13 +455,18 @@ bits 32
 		pop eax  ; Restore.
 		; Magic to convert a real-mode segment*16+offset address to a linear address in dword [ESP], without modifying any general-purpose registers. (It modifies EFLAGS.)
 		xchg eax, [esp]
-		push eax  ; Sneak in a backup copy of EAX below (i.e. higher address) the current dword on the top of the stack.
-		push byte 0  ; Pushes 2 bytes, because we are in real mode.
-		push ax  ; Offset.
+		;
+		; This would also work, but it's longer.
+		;push eax
+		;movzx eax, ax  ; Keep only the offset.
+		;xchg eax, [esp]
+		push strict word 0  ; This pushes 2 bytes in protected mode.
+		push ax
+		;
 		shr eax, 12
 		and al, 0xf0
 		add [esp], eax  ; Add offset to linear segment. Keep it pushed for the `ret' below.
-		pop eax
+		pop eax  ; Discard the linear address corresponding to the segment.
 		xchg eax, [esp]
 		; End of linear address conversion magic.
 		ret  ; This is already in protected mode, but the ret opcode is the same.
