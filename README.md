@@ -20,8 +20,8 @@ The Universal Kernel Header (UKH) supports multiple load protocols:
   * UKH boot code autodetects the subtype by looking at CS:IP upon entry.
   * Please note that this boot mode works only if the bootloader loads the entire kernel file. Universal Kernel Header has a best-effort check for having loaded the first sector only. If the check fails, then it hangs with the message *bF*. There is no check for loading more than 29 KiB.
   * Subtype PXE: Load entire kernel file (in PXE terminology, NBP == Network Boot Program) to 0x7c00, don't set DL to the BIOS drive numbe, jump to 0:0x7c00. The maximum kernel file size depends on the PXE version: 2.0 (1999): 32 KiB; 2.1 (2003): 64 KiB; 2.2 (2008): unlimited. More info about PXE: https://wiki.osdev.org/PXE
-  * Subtype FreeDOS (FreeDOS and SvarDOS *kernel.sys*): Load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number. Maximum file size, limited by the FreeDOS and SvarDOS boot sectors: 134.5 KiB.
-  * Subtype EDR-DOS (EDR-DOS 7.01.07--7.01.08 *drbio.sys*): load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0. Maximum file size, limited by the EDR-DOS boot sector: 134.5 KiB.
+  * Subtype FreeDOS (FreeDOS and SvarDOS *kernel.sys*): Load kernel file to 0x600, set BL to BIOS drive number, make one SS:BP (FreeDOS for the command line, between SS:SP (smaller) and SS:BP) and DS:BP (SvarDOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x60:0. No header fields used. Both FreeDOS 1.3 and SvarDOS 20240915 kernel.sys kernels use BL only, and both boot sectors set BL and DL to the BIOS drive number. Therere is a kernel command line for FreeDOS, but is there one for SvarDOS? Maximum file size, limited by the FreeDOS and SvarDOS boot sectors: 134.5 KiB.
+  * Subtype EDR-DOS (EDR-DOS 7.01.07--7.01.08 *drbio.sys*): load entire kernel file to 0x700, set DL to BIOS drive number, make DS:BP (EDR-DOS for .hidden_sector_count) point to the boot sector (we don't care), jump to 0x70:0. Is there a kernel command line? Maximum file size, limited by the EDR-DOS boot sector: 134.5 KiB.
   * Subtype DR-DOS (EDR-DOS 7.01.01--7.01.06 *ibmbio.com*, DR-DOS --7.0--7.01--7.02--7.03--7.05 *ibmbio.com*): They use the same load protocol as EDR-DOS (but with filename *ibmbio.com*), but the boot maximum kernel size its boot sector supports is 29 KiB (way too small for memtest86+), with its *ibmbio.com* being <24.25 KiB.
   * Subtype NTLDR (Windows NTLDR *ntldr* and GRUB4DOS bootlace.com *grldr*): Load at least first 0x24 bytes (.hidden_sector_count or the entire 0x24 byte substring, see https://retrocomputing.stackexchange.com/a/31399) of the boot partition (boot sector) to 0x7c00, load kernel file to 0x20000, set DL to the BIOS drive number, jump to 0x2000:0. No header fields used. The GRUB4DOS boot sector (installed with *bootlace.com*) uses the same protocol, looking for kernel file *grldr* rather than *ntldr*.
   * Bootloaders supported: non-UEFI GRUB 2 and GRUB4DOS (but not GRUB 1, because it loads only 512 bytes) with the *chainloader* command, SYSLINUX (and ISOLINUX and PXELINUX) with the *boot* command (or with the *kernel* command and a filename extensions .bin, .bs and .0); PXE network boot 2.0 and 2.1 (with small kernel file size limit), PXE network boot >=2.2; FreeDOS boot sector with filename *kernel.sys*; SvarDOS boot sector with filename *kernel*.sys*; EDR-DOS >=7.01.07 boot sector with filename *drbio.sys*; DR-DOS boot sector with filename *ibmbio.com*; Windows NT 3.1--3.5--3.51--4.0 boot sector with filename *ntldr*; Windows 2000--XP boot sector with filename *ntldr*; maybe Windows Vista-- boot sector with filename *bootmgr* (untested); * NTLDR from Windows NT boot.ini (`C:\NTLDR="label"`): maximum file size is 8 KiB, because it loads only the first 16 sectors (0x2000 == 8192 bytes) of the *ntldr* file, otherwise the same as the supported NTLDR above.
@@ -92,6 +92,37 @@ SYSLINUX 4.07 supports these file formats:
 |config   |VK_CONFIG  | 8|configuration file  ||
 
 In SYSLINUX, *bss* is like *boot*, but after loading to kernel file, bytes 0xb..0x25 of the kernel file are ignored (good enough for FAT12 and FAT16, too short for FAT32), and the bytes from the boot sector are used instead of them.
+
+Data passing for DOS kernels (this is independent of UKH), based on https://pushbx.org/ecm/doc/ldosboot.htm :
+
+* DR-DOS, EDR-DOS and SvarDOS from boot sector to kernel:
+  * DL == BIOS drive number used for booting.
+  * DS:BP points to a memory region of <=0x5a bytes containing the beginning of the boot sector.
+  * SS:SP points to a top of a valid stack.
+  * Is there a kernel command line?
+* FreeDOS from boot sector to kernel:
+  * BL == BIOS drive number used for booting.
+  * SS:BP points to a memory region of <=0x5a bytes containing the beginning of the boot sector.
+  * SS:SP..SS:BP contains the kernel command line if properly set up. SP <= BP.
+  * SS:SP points to a top of a valid stack.
+* MS-DOS v6 load protocol (MS-DOS 3.30--6.22 and IBM PC DOS 3.30--7.1) from msload (first <=0x600 bytes of io.sys) to msbio:
+  * DL == BIOS drive number used for booting.
+  * CH == media descriptor.
+  * AX:BX == sector offset (LBA) of the clusters (i.e. cluster 2) in this FAT filesystem, from the beginning of the BIOS drive.
+  * SS:SP points to a top of a valid stack.
+  * IBM PC DOS 7.1 expects some values on the stack.
+  * Low  word of the start cluster number of load file. For MS-DOS v7. Already filled: word [0x51a] for IBM PC DOS 7.1. Probably not needed.
+  * High word of the start cluster number of load file. For MS-DOS v7. Already filled: word [0x514] for IBM PC DOS 7.1, FAT32. Probably not needed.
+  * Low  word of start cluster number of 2nd load file (ibmdos.com) at word [0x53a]. For IBM PC DOS 7.1.
+  * High word of start cluster number of 2nd load file (ibmdos.com) at word [0x534]. For IBM PC DOS 7.1, FAT32.
+* MS-DOS v7 load protocol from msload (first 0x800 bytes of io.sys) to msbio:
+  * AX == 0. `mov ax, [0x7fa]' of the original (0x800-byte) msload, the value is 0.
+  * BX == 0. `mov ax, [0x7fa+2]' of the original (0x800-byte) msload, the value is 0.
+  * DI == msbio_passed_para_count == load_para_count. Number of paragraphs before MSDCM (total in msload and msbio). Original Windows 98 SE msbio passed a smaller value, the exact value being very strange.
+  * DL == BIOS drive number used for booting.
+  * DH == media descriptor.
+  * SS:SP points to a top of a valid stack.
+  * SS:BP points to a memory region of <=0x5a bytes containing the beginning of the boot sector.
 
 Testing notes:
 
