@@ -144,12 +144,12 @@ kernel:
 		mov al, 0xff  ; Must be exactly 2 bytes, for .partition_error.
 .found_partition:
 		mov esp, 0x8200  ; Set up a low enough stack which won't be clobbered by the copies below.
-		push 0x8270  ; Return address of ukh_real_mode_flat, GRUB 1 codestart entry point, as far segment:offset (0:0x8270).
-		push ukh_real_mode_flat  ; Address of ukh_real_mode_flat.
+		push 0x8270  ; Return address of ukh_real_mode_far, GRUB 1 codestart entry point, as far segment:offset (0:0x8270).
+		push ukh_real_mode_far  ; Address of ukh_real_mode_far.
 		db 0x68  ; i386 opcode for `push strict dword, ...'.
 		    rep movsd  ; Do the big copy.
 		    pop eax  ; Pop this 4 bytes of code from the stack. This is safe because interrupts are disabled.
-		    ret  ; Return to ukh_real_mode_flat.
+		    ret  ; Return to ukh_real_mode_far.
 		mov esi, kernel
 		mov byte [esi+.install_partition+2-kernel], al   ; Set install_partition to (hdD,P), where P is AL (0, 1, 2 or 3), assuming the previous value was 0xffffff.
 		mov edi, 0x8200
@@ -171,7 +171,7 @@ kernel:
 %endif
 		or ebp, byte -1  ; Make sure install_second_sector is invalid for GRUB 1 0.97 stage2/asm.S.
 		; Pass DL (BIOS drive number, will become boot_drive) and EBP (install_second_sector) to GRUB 1 stage2/asm.S codestart.
-		jmp esp  ; Jumps to the big copy (`rep movsd'), does the copy, returns to ukh_real_mode_flat, returns to the GRUB 1 codestart entry point (0:0x8270).
+		jmp esp  ; Jumps to the big copy (`rep movsd'), does the copy, returns to ukh_real_mode_far, returns to the GRUB 1 codestart entry point (0:0x8270).
 
 		times (kernel-$)&3 hlt  ; Align to a multiple of 4, for faster copy.
 .grub1_codestart:

@@ -386,7 +386,11 @@ bits 32
 		rol eax, 16
 		shl ax, 12
 		rol eax, 16
-		xchg eax, [esp]  ; Converted linear address in EAX to real-mode segment:offset.
+		xchg eax, [esp]  ; Converted linear address in EAX to real-mode segment:offset. Offset in AX is unchanged, segment is (orig_EAX&0xf0000)<<12.
+		; Fall through to ukh_real_mode_far.
+; API function ukh_real_mode_far. Push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
+.real_mode_far:
+		__ukh_assert_at boot_sector+0x242  ; Address part of the API.
 		push eax  ; Save.
 		;jmp ..@INIT16_CS:.real1-boot_sector
 		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
@@ -674,6 +678,7 @@ code32:  ; !!! Rename it to ukh_payload.
 
 ukh_drive_number_flat equ 0x90007  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
 ukh_real_mode_flat    equ 0x90232  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
+ukh_real_mode_far     equ 0x90242  ; Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
 
 bits 16
 %ifdef UKH_PAYLOAD_32  ; i386+ 32-bit protected-mode payload.
