@@ -143,6 +143,10 @@ LOADFLAG_READ:
 ; * The FreeDOS (checked versions 1.0--1.1--1.2--1.3) and SvarDOS (checked version 20240915) boot sector passes it in both BL and DL (DL is unnecessary).
 ; * The FreeDOS (checked version 1.3) kernel gets it from BL.
 ; * The SvarDOS (checked version 20240915) gets it from BL if the initial CS is 0x60 (FreeDOS load protocol), and from DL if the initial CS is 0x70 (DR-DOS load protocol).
+;
+; What is near 0xa0000 (64 KiB after INITSEG == 0x9000): EBDA (Extended BIOS
+; Data Area). Its segment is referenced by a word at 0x40e (in real-mode
+; memory), which is typically 1 KiB 0x9fc00..0xa0000.
 boot_sector:  ; 1 sector of 0x200 bytes.
 .start:
 .cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
@@ -238,7 +242,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		cli
 		push es
 		pop ss  ; SS := INITSEG.
-		mov sp, 0xa000  ; Set SS:SP to INITSEG:0x9000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
+		mov sp, 0xa000  ; Set SS:SP to INITSEG:0xa000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
 		; Copy BXS_SIZE bytes (2 sectors) from DS:0 (actually loaded boot_sector+setup_sector) to INITSEG:0. There is no overlap.
@@ -376,7 +380,7 @@ cpu 386
 
 ; API function ukh_real_mode. Call it from 32-bit protected mode at 0x90232.
 		__ukh_assert_at boot_sector+0x232  ; Address part of the API.
-.real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS and SS to KERNELSEG. Doesn't enable (sti) or disable (cli) interrupts. The caller may enable interrupts after the call. Keeps all general-purpose registers intact. Ruins EFLAGS.
+.real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS to KERNELSEG, and SS to 0. Doesn't enable (sti) or disable (cli) interrupts. The caller may enable interrupts after the call. Keeps all general-purpose registers intact. Ruins EFLAGS.
 bits 32
 		xchg eax, [esp]
 		rol eax, 16
@@ -668,8 +672,8 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 
 code32:  ; !!! Rename it to ukh_payload.
 
-ukh_drive_number_flat equ 0x90007  ; This only works with `org (KERNELSEG<<4)-BXS_SIZE'. Only valid in protected mode.
-ukh_real_mode_flat    equ 0x90232  ; This only works with `org (KERNELSEG<<4)-BXS_SIZE'. Only valid in protected mode.
+ukh_drive_number_flat equ 0x90007  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
+ukh_real_mode_flat    equ 0x90232  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
 
 bits 16
 %ifdef UKH_PAYLOAD_32  ; i386+ 32-bit protected-mode payload.
