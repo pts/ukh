@@ -34,7 +34,7 @@
 %endif
 
 %ifdef UKH_PAYLOAD_16A
-  %define UKH_PAYLOAD16
+  %define UKH_PAYLOAD_16
 %endif
 %ifdef UKH_PAYLOAD_16B
   %define UKH_PAYLOAD_16
