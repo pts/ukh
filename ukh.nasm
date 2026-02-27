@@ -179,9 +179,6 @@ LOADFLAG_READ:
 ; memory), which is typically 1 KiB 0x9fc00..0xa0000.
 boot_sector:  ; 1 sector of 0x200 bytes.
 .start:
-.cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw UKH_KERNEL_CMDLINE_MAGIC_VALUE (== 0xa33f).
-.cl_offset equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
-.cl_offset_high_word equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
 .gdt:  ; The first GDT entry (segment descriptor, 8 bytes) can contain arbitrary bytes, so we overlap it with boot code. https://stackoverflow.com/a/33198311
 		; https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
 		; The GDT has to remain valid until the next lgdt instruction (potentially long), so we'll keep it at linear address 0x90000.
@@ -214,19 +211,24 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ..@KERNEL_DS: equ $-.gdt  ; Segment ..@KERNEL_DS == 0x10 descriptor. used when running in protected mode. QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
 		EMIT_DATA_SEGMENT_DESCRIPTOR(0, -1, 0, 1, 0, 0, 1, 0, 1, 1)  ; dw 0xffff, 0, 0x9200, 0xcf  ; 32-bit, data, read-write, base 0, limit 4GiB-1, limit granularity 0x1000.
 ..@BACK16_CS: equ $-.gdt  ; Segment ..@BACK16_CS == 0x18 descriptor. Used for switching back to real mode.  Its flags will be reused when back in real mode.
-		EMIT_CODE_SEGMENT_DESCRIPTOR(INITSEG<<4, -1, 0, 1, 1, 0, 1, 0, 0, 1)  ; dw ..., ..., 0x9e00|..., 0x8f|...  ; 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, limit granularity 0x1000, conforming (c=1). !! Set limit=0xffff, a=1, c=0, g=0 to match pts-grub1-port.
-		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff,     0, 1, 1, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9e00, 0  ; 16-bit, code, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
-		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff,     1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9b00, 0  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in CS in QEMU 2.11.1 boot sector load time.
-;..@BACK16_DS: equ $-.gdt  ; Segment ..@BACK16_DS == 0x28 descriptor. Used for switching back to real mode.  Its flags will be reused when back in real mode. Won't actually be used to reference memory while switching.
-		;__ukh_assert_at .gdt+5*8
-		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 0, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9200, 0  ; 16-bit, data, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
-		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in DS, ES, FS, GS, SS in QEMU 2.11.1 boot sector load time.
-		;EMIT_DATA_SEGMENT_DESCRIPTOR(0xfffff, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, read-write, base arbitrary (0xfffff, arbitrary, unused, unusual), limit 0xffff, limit limit granularity 0 (1 byte). upfx_32.nasm has these values.
-.gdt_end:	__ukh_assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
-.code2:		pop si  ; SI := actual offset of .here.
+		EMIT_CODE_SEGMENT_DESCRIPTOR(INITSEG<<4, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, ..., 0x9b00|..., 0|...  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor (except for base=0 there) in CS in QEMU 2.11.1 boot sector load time.
+		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9b00, 0  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in CS in QEMU 2.11.1 boot sector load time.
+		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff, 0, 1, 1, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9e00, 0  ; 16-bit, code, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
+		__ukh_assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
+.cl_magic:  ; equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw UKH_KERNEL_CMDLINE_MAGIC_VALUE (== 0xa33f).
+.cl_offset: equ $+2  ; equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
+.cl_offset_high_word: equ $+4  ; equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
+.code2:		pop si  ; SI := actual offset of .here. Self-modifying code: 6 bytes here overlap with word [.cl_magic], word [.cl_offset], word [.cl_offset_high_word].
 		sub si, byte .here-.start  ; SI := actual offset of .start.
-		mov ax, 0xe00+'?'  ; Set up error message.
 		mov cx, cs
+		jmp short .code3
+		__ukh_assert_at .gdt+5*8
+..@BACK16_DS: equ $-.gdt  ; Segment ..@BACK16_DS == 0x28 descriptor. Used for switching back to real mode. Its flags will be reused when back in real mode. Won't actually be used to reference memory while switching.
+		EMIT_DATA_SEGMENT_DESCRIPTOR(0,        0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in DS, ES, FS, GS, SS in QEMU 2.11.1 boot sector load time.
+		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 0, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9200, 0  ; 16-bit, data, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
+		;EMIT_DATA_SEGMENT_DESCRIPTOR(0xfffff, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, read-write, base arbitrary (0xfffff, arbitrary, unused, unusual), limit 0xffff, limit limit granularity 0 (1 byte). upfx_32.nasm has these values.
+.gdt_end:	__ukh_assert_at .gdt+6*8
+.code3:		mov ax, 0xe00+'?'  ; Set up error message.
 		test cx, cx
 		jnz short .not_chain_protocol
 		cmp si, BOOT_ENTRY_ADDR
@@ -354,6 +356,52 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 
 		jmp (INITSEG+0x20):(setup_sector.setup_chain-setup_sector)
 
+; This code has been moved from setup_sector below to boot_sector to leave
+; more free space in setup_sector for .kernel_version_string.
+.real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
+bits 16
+cpu 386
+		; We use the movs below to copy the limit, the flags (e.g.
+		; granularity) and the access byte (and also the base) from
+		; gdt_chainloader to the segment register shadow
+		; descriptors. It would be too late to copy them in real
+		; mode, because a real-mode mov to a segment register only
+		; updates the base in the shadow descriptor.
+		;
+		; MS-DOS 7.1 io.sys in QEMU 2.11.1 requires the correct
+		; limit, flags an access byte values. Without them it hangs
+		; the system at boot time about 0.1% of the time.
+		mov ds, ax  ; This is required, because .prot_ret has changed the shadow descriptor of DS.
+		mov es, ax  ; This is required, because .prot_ret has changed the shadow descriptor of ES.
+		mov fs, ax  ; This is required, because .prot_ret has changed the shadow descriptor of FS.
+		mov gs, ax  ; This is required, because .prot_ret has changed the shadow descriptor of GS.
+		mov ss, ax  ; This is required, because .prot_ret has changed the shadow descriptor of SS.
+		mov eax, cr0
+		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
+		mov cr0, eax
+		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
+		; There seems to be no need to do a far jump to .real2 just
+		; yet (see https://stackoverflow.com/q/79551879 for
+		; details). Thus we remain in 16-bit protected mode (based
+		; on the descriptor of CS) until the `retf' below.
+		;jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment. With this jump, we would switch to real mode CS.
+;.real2:  ; We are in real mode now in terms of CS.
+		xor ax, ax
+		mov ss, ax  ; This updates the only base in the shadow descriptor to 0.
+  %if KERNELSEG&0xff
+    %error ERROR_KERNELSEG_HAS_NONZERO_LOW_BYTE  ; This prevents the `mov ah, ..' optimization below.
+    times -1 nop
+  %endif
+		mov ah, KERNELSEG>>8  ; 1 byte shorter than `mov ax, KERNELSEG'.
+		mov ds, ax  ; This updates the only base in the shadow descriptor to KERNELSEG.
+		mov es, ax  ; This updates the only base in the shadow descriptor to KERNELSEG.
+		mov fs, ax  ; This updates the only base in the shadow descriptor to KERNELSEG.
+		mov gs, ax  ; This updates the only base in the shadow descriptor to KERNELSEG.
+		pop eax  ; Restore.
+		;sti  ; Give the caller a chance to call .a20_gate while interrupts are still disabled.
+		retf  ; This switches to real mode CS.
+cpu 8086
+
 		times (.start-$)&1 nop  ; Align to even.
 .copy_of_setup_sector:  ; Extra bytes from the beginning of setup_sector, so that we can figure out that it has been loaded (not only the boot_sector).
 		db 0xeb, setup_sector.setup_linux-(setup_sector.jump+2)
@@ -418,9 +466,9 @@ setup_sector:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded 
 		__ukh_assert_fofs 0x226
 .linux_boot_header.end:
 
-cpu 386
-
-.setup_chain:	add word [cs:.jmp_offset-setup_sector], byte chain_entry-linux_entry  ; Change the protected mode entry point from linux_entry to chain_entry.
+.setup_chain:
+bits 16
+		add word [cs:.jmp_offset-setup_sector], byte chain_entry-linux_entry  ; Change the protected mode entry point from linux_entry to chain_entry.
 		jmp short .setup_linux_and_chain
 
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 `qemu-system-i386-kernel' overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
@@ -429,10 +477,12 @@ cpu 386
 .protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to INITSEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
 		jmp short .protected_mode_far_low
 
+cpu 386
+bits 32
+
 ; API function ukh_real_mode. Call it from 32-bit protected mode at 0x90232.
 		__ukh_assert_at boot_sector+0x232  ; Address part of the API.
 .real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS to KERNELSEG, and SS to 0. Doesn't enable (sti) or disable (cli) interrupts. The caller may enable interrupts after the call. Keeps all general-purpose registers intact. Ruins EFLAGS.
-bits 32
 		xchg eax, [esp]
 		rol eax, 16
 		shl ax, 12
@@ -443,34 +493,14 @@ bits 32
 .real_mode_far:
 		__ukh_assert_at boot_sector+0x242  ; Address part of the API.
 		push eax  ; Save.
+		mov ax, ..@BACK16_DS
 		; We must use a far jump with a 16-bit offset here (to jump to a 16-bit protected code segment), because with a 32-bit offset it doesn't work in
 		; 86Box-4.2.1, Intel 430VX chipset, Pentium-S P54C 90 MHz CPU. (Both work in QEMU 2.11.1, VirtualBox and https://copy.sh/v86).
 		;jmp ..@BACK16_CS:.real1-boot_sector  ; This would be a far jump with a 32-bit offset. It doesn't work in 86Box.
-		dw 0xea66, .real1-boot_sector, ..@BACK16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
-.real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
-bits 16
-		mov eax, cr0
-		and al, byte ~1  ; PE := 0. Leave protected mode, enter real mode.
-		mov cr0, eax
-		;lmsw ax  ; This doesn't work instead of modifyingc CR0, .real2 won't be reached. Why? (Ask on stackoverflow.com.)
-		jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment. !!! Is this jump needed?
-.real2:  ; We are in real mode now in terms of CS.
-		xor ax, ax
-		mov ss, ax
-  %if KERNELSEG&0xff
-    %error ERROR_KERNELSEG_HAS_NONZERO_LOW_BYTE  ; This prevents the `mov ah, ..' optimization below.
-    times -1 nop
-  %endif
-		mov ah, KERNELSEG>>8  ; 1 byte shorter than `mov ax, KERNELSEG'.
-		mov ds, ax
-		mov es, ax
-		mov fs, ax
-		mov gs, ax
-		pop eax  ; Restore.
-		;sti  ; Give the caller a chance to call .a20_gate while interrupts are still disabled.
-		retf
+		dw 0xea66, boot_sector.real1-boot_sector, ..@BACK16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
 
 .setup_linux:  ; The 16-bit Linux entry point jumps here from setup_sector.start, as jmp INITSEG+0x20:0.
+bits 16
 %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
 		xor bx, bx
