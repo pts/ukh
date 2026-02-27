@@ -192,15 +192,36 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .a20_gate_far:	jmp near setup_sector.a20_gate_far_low
 .drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 		__ukh_assert_at .gdt+8  ; End if first GDT entry.
-..@KERNEL_CS: equ $-.gdt
-                dw 0xffff, 0, 0x9a00, 0xcf  ; Segment ..@KERNEL_CS == 8.    32-bit, code, read-execute, base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
-..@KERNEL_DS: equ $-.gdt
-                dw 0xffff, 0, 0x9200, 0xcf  ; Segment ..@KERNEL_DS == 0x10. 32-bit, data, read-write,   base 0, limit 4GiB-1, granularity 0x1000.  QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
-                ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
-                ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
-..@INIT16_CS: equ $-.gdt
-		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@INIT16_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, granularity 0x1000.
-
+; base (32 bits): ifr e=0, then first valid linear address
+; limit (20 bits): if e=0 and g=0, then last valid linear address is (base+limit)&0xffffffff; if e=0 and g=1, then the last valid linear address is (base+((limit+1)<<12)-1)&0xffffffff
+; a (accessed) bit: set to 1 by the CPU when the segment is first accessed, and can be cleared by the kernel
+; r (readable) bit for code segments: if r=0, then the segment is execute-only; if r=1, then the segment is read-execute
+; w (writable) bit for data segments: if w=0, then the segment is read-only; if w=1, then the segment is read-write
+; c (conforming) bit for code segments: iff c=1, then code in this segment may be called from less-privileged levels
+; e (expand-down) bit for data segments: iff e=0, then valid addressses are base .. base+limit-1; if e=1 (typically used for stacks), then valid addresses in 32-bit mode are (base+limit+1)&0xffffffff .. (base-1)&0xffffffff
+; d (descriptor privilege level) (2 bits): just use 0 in kernel mode
+; p (present) bit: iff p=0, then each access triggers a segment-not-present exception; just use 1 until you implement pages in your kernel
+; avl (available) bit: not used by the CPU, the kernel can use it for any purpose
+; d (default operand size) bit for code segments: if d=0, then this is a 16-bit code segment executing code in the i86 encoding; if d=1, then this is a 32-bit code segment executing code in the i386 encoding
+; b (big) bit for data segments: if d=0, then the offset of each access is masked to 16 bits (&0xffff); if d=1, then the offset of each access is 32 bits
+; g (granularity) bit: changes the interpretation of limit
+; See more info at  https://en.wikipedia.org/wiki/Segment_descriptor#The_x86_and_x86-64_segment_descriptor and https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
+%define EMIT_SEGMENT_DESCRIPTOR(base, limit, a, rw, ce, code, s, dpl, p, avl, db, g) dw ((limit)&0xffff), ((base)&0xffff), (((base)>>16)&0xff)|((a)&1)<<8|((rw)&1)<<9|((ce)&1)<<10|((code)&1)<<11|((s)&1)<<12|((dpl)&3)<<13|((p)&1)<<15, (((limit)>>16)&0xf)|((avl)&1)<<4|((db)&1)<<6|((g)&1)<<7|(((base)>>24)&0xff)<<8
+%define EMIT_CODE_SEGMENT_DESCRIPTOR(base, limit, a, r, c, dpl, p, avl, d, g) EMIT_SEGMENT_DESCRIPTOR(base, limit, a, r, c, 1, 1, dpl, p, avl, d, g)
+%define EMIT_DATA_SEGMENT_DESCRIPTOR(base, limit, a, w, e, dpl, p, avl, b, g) EMIT_SEGMENT_DESCRIPTOR(base, limit, a, w, e, 0, 1, dpl, p, avl, b, g)
+..@KERNEL_CS: equ $-.gdt  ; Segment ..@KERNEL_CS == 8 descriptor. Used when running in protected mode. QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
+                EMIT_CODE_SEGMENT_DESCRIPTOR(0, -1, 0, 1, 0, 0, 1, 0, 1, 1)  ; dw 0xffff, 0, 0x9a00, 0xcf  ; 32-bit, code, read-execute, base 0, limit 4GiB-1, limit granularity 0x1000, non-conforming (c=0).
+..@KERNEL_DS: equ $-.gdt  ; Segment ..@KERNEL_DS == 0x10 descriptor. used when running in protected mode. QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
+		EMIT_DATA_SEGMENT_DESCRIPTOR(0, -1, 0, 1, 0, 0, 1, 0, 1, 1)  ; dw 0xffff, 0, 0x9200, 0xcf  ; 32-bit, data, read-write, base 0, limit 4GiB-1, limit granularity 0x1000.
+..@BACK16_CS: equ $-.gdt  ; Segment ..@BACK16_CS == 0x18 descriptor. Used for switching back to real mode.  Its flags will be reused when back in real mode.
+		EMIT_CODE_SEGMENT_DESCRIPTOR(INITSEG<<4, -1, 0, 1, 1, 0, 1, 0, 0, 1)  ; dw ..., ..., 0x9e00|..., 0x8f|...  ; 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, limit granularity 0x1000, conforming (c=1). !! Set limit=0xffff, a=1, c=0, g=0 to match pts-grub1-port.
+		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff,     0, 1, 1, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9e00, 0  ; 16-bit, code, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
+		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff,     1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9b00, 0  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in CS in QEMU 2.11.1 boot sector load time.
+;..@BACK16_DS: equ $-.gdt  ; Segment ..@BACK16_DS == 0x28 descriptor. Used for switching back to real mode.  Its flags will be reused when back in real mode. Won't actually be used to reference memory while switching.
+		;__ukh_assert_at .gdt+5*8
+		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 0, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9200, 0  ; 16-bit, data, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
+		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in DS, ES, FS, GS, SS in QEMU 2.11.1 boot sector load time.
+		;EMIT_DATA_SEGMENT_DESCRIPTOR(0xfffff, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, read-write, base arbitrary (0xfffff, arbitrary, unused, unusual), limit 0xffff, limit limit granularity 0 (1 byte). upfx_32.nasm has these values.
 .gdt_end:	__ukh_assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
 .code2:		pop si  ; SI := actual offset of .here.
 		sub si, byte .here-.start  ; SI := actual offset of .start.
@@ -424,8 +445,8 @@ bits 32
 		push eax  ; Save.
 		; We must use a far jump with a 16-bit offset here (to jump to a 16-bit protected code segment), because with a 32-bit offset it doesn't work in
 		; 86Box-4.2.1, Intel 430VX chipset, Pentium-S P54C 90 MHz CPU. (Both work in QEMU 2.11.1, VirtualBox and https://copy.sh/v86).
-		;jmp ..@INIT16_CS:.real1-boot_sector  ; This would be a far jump with a 32-bit offset. It doesn't work in 86Box.
-		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
+		;jmp ..@BACK16_CS:.real1-boot_sector  ; This would be a far jump with a 32-bit offset. It doesn't work in 86Box.
+		dw 0xea66, .real1-boot_sector, ..@BACK16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
 .real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
 bits 16
 		mov eax, cr0
