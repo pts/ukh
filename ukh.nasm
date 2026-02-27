@@ -219,8 +219,9 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .cl_offset: equ $+2  ; equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
 .cl_offset_high_word: equ $+4  ; equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
 .code2:		pop si  ; SI := actual offset of .here. Self-modifying code: 6 bytes here overlap with word [.cl_magic], word [.cl_offset], word [.cl_offset_high_word].
-		sub si, byte .here-.start  ; SI := actual offset of .start.
 		mov cx, cs
+		__ukh_assert_at .cl_offset_high_word-1
+		test ax, strict word 9  ; Also sets word [.cl_offset_high_word] to 9. This 9 is used by dword [ukh_kernel_cmdline_ptr] in protected mode.
 		jmp short .code3
 		__ukh_assert_at .gdt+5*8
 ..@BACK16_DS: equ $-.gdt  ; Segment ..@BACK16_DS == 0x28 descriptor. Used for switching back to real mode. Its flags will be reused when back in real mode. Won't actually be used to reference memory while switching.
@@ -228,7 +229,8 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 0, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9200, 0  ; 16-bit, data, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
 		;EMIT_DATA_SEGMENT_DESCRIPTOR(0xfffff, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, read-write, base arbitrary (0xfffff, arbitrary, unused, unusual), limit 0xffff, limit limit granularity 0 (1 byte). upfx_32.nasm has these values.
 .gdt_end:	__ukh_assert_at .gdt+6*8
-.code3:		mov ax, 0xe00+'?'  ; Set up error message.
+.code3:		sub si, byte .here-.start  ; SI := actual offset of .start.
+		mov ax, 0xe00+'?'  ; Set up error message.
 		test cx, cx
 		jnz short .not_chain_protocol
 		cmp si, BOOT_ENTRY_ADDR
@@ -342,10 +344,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor di, di
 		rep movsw
 		mov ax, ds
-		add ax, dx ; [+-] (0x200>>4)
+		add ax, dx  ; [+-] (0x200>>4)
 		mov ds, ax
 		mov ax, es
-		add ax, dx ; [+-] (0x200>>4)
+		add ax, dx  ; [+-] (0x200>>4)
 		mov es, ax
 		dec bx
 		jnz short .copy_sector
@@ -712,7 +714,6 @@ linux_entry:  ; Setup registers and jump to kernel. We assume that already IF=0 
 
 chain_entry:  ; Fall through to start_32.
 start_32:  ; Linux, chain and Multiboot load protocols all end here.
-		mov word [0x90022+2], 9  ; boot_sector.cl_offset_high_word.
 		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
 		mov esp, KERNELSEG<<4  ; A useful value. The Multiboot v1 specification allows any (nonworking) value in ESP. We will subtract 4 so that it won't be truncated when we use only the low 16 bits in real mode (SP).
 		push esp
