@@ -2,9 +2,38 @@
 ; ukh.nasm: Universal Kernel Header (UKH)
 ; by pts@fazekas.hu at Mon Mar 17 13:45:39 CET 2025
 ;
-; Compile with: nasm -O0 -w+orphan-labels -f bin -o testk1.multiboot.bin testk1.nasm  # Includes ukh.nasm.
+; Example kernel source (copy it to file example.nasm):
+;
+;   %define UKH_PAYLOAD_32
+;   ;%define UKH_VERSION_VERSION_STRING '...'  ; Optional.
+;   ;%define UKH_... ...  ; Optional.
+;   %include 'ukh.nasm'
+;
+;   ; This is the payload code of your kernel. It starts in 32-bit protected
+;   ; mode, see more info later.
+;   mov word [0xb8000], 0x1700|'1'  ; Write to the top left corner to the text screen. It works.
+;   ukh_real_mode  ; Switch back to real mode.
+;   mov bx, 0xb800
+;   mov es, bx
+;   mov word [es:2], 0x1700|'2'  ; Write just after the top left corner to the text screen. It works.
+;   ukh_protected_mode  ; Switch to 32-bit protected mode.
+;   mov word [0xb8004], 0x1700|'3'  ; Write just 2 characetrs after the top left corner to the text screen. It works.
+;   ukh_real_mode  ; Switch back to real mode.
+;   mov ax, 0xe00+'B'  ; Set up printing character 'B'.
+;   xor bx, bx  ; Set up printing.
+;   int 0x10  ; Print character 'B' to the screen.
+;   xor ax, ax
+;   int 0x16  ; Wait for user keypress.
+;   int 0x19  ; Reboot.
+;
+; Compile the example kernel above with: nasm -O0 -w+orphan-labels -f bin -o example.multiboot.bin example.nasm
 ; Minimum NASM version required 0.98.39.
-; Run it with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk1.multiboot.bin
+; Run the example kernel with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel example.multiboot.bin
+;
+; Compile the test kernel with: nasm -O0 -w+orphan-labels -f bin -o testk1.multiboot.bin testk1.nasm  # Includes ukh.nasm.
+; Run the test kernel with: qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk1.multiboot.bin
+;
+; See more documentation (including the API and the load protocol) in README.md.
 ;
 
 ; --- Configuration.
@@ -85,7 +114,8 @@ cpu 8086
 
 BOOT_SIGNATURE equ 0xaa55
 
-LINUX_CL_MAGIC equ 0xa33f
+UKH_KERNEL_CMDLINE_MAGIC_VALUE equ 0xa33f  ; See above.
+;LINUX_CL_MAGIC equ 0xa33f
 OUR_LINUX_BOOT_PROTOCOL_VERSION equ 0x201  ; 0x201 is the last one which loads everything under 0xa0000 (even 0x9a000). Later versions load code32 above 1 MiB (linear address >=0x100000).
 
 MULTIBOOT_MAGIC equ 0x1badb002
@@ -106,7 +136,7 @@ org (KERNELSEG<<4)-BXS_SIZE  ; This is for the payload .nasm source. The code in
 LOADFLAG_READ:
 .HIGH: equ 1 << 0
 
-%macro ukh_halt 0  ; Works in both protected mode and real mode.
+%macro ukh_halt 0  ; Works in both protected mode and real mode. This is part of the API.
   cli
   %%back: hlt
   jmp short %%back
@@ -149,7 +179,7 @@ LOADFLAG_READ:
 ; memory), which is typically 1 KiB 0x9fc00..0xa0000.
 boot_sector:  ; 1 sector of 0x200 bytes.
 .start:
-.cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw LINUX_CL_MAGIC (== 0xa33f).
+.cl_magic equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw UKH_KERNEL_CMDLINE_MAGIC_VALUE (== 0xa33f).
 .cl_offset equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
 .cl_offset_high_word equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
 .gdt:  ; The first GDT entry (segment descriptor, 8 bytes) can contain arbitrary bytes, so we overlap it with boot code. https://stackoverflow.com/a/33198311
@@ -169,7 +199,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
                 ;dw 0xffff, 0, 0x9e00, 0  ; ..@PSEUDO_RM_CS == 0x18. 16-bit, code, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
                 ;dw 0xffff, 0, 0x9200, 0  ; ..@PSEUDO_RM_DS == 0x20. 16-bit, data, base 0. Used for switching back to real mode. GRUB 1 0.97 stage2/asm.S also has these values.
 ..@INIT16_CS: equ $-.gdt
-		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@BACK_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, granularity 0x1000.
+		dw 0xffff, (INITSEG<<4)&0xffff, 0x9e00|(((INITSEG<<4)>>16)&0xff), 0x8f|(((INITSEG<<4)>>24)&0xff)<<8  ; Segment ..@INIT16_CS == 8. 16-bit, code, read-execute, base INITSEG<<4 (setup_sector), limit 4GiB-1, granularity 0x1000.
 
 .gdt_end:	__ukh_assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
 .code2:		pop si  ; SI := actual offset of .here.
@@ -392,8 +422,10 @@ bits 32
 .real_mode_far:
 		__ukh_assert_at boot_sector+0x242  ; Address part of the API.
 		push eax  ; Save.
-		;jmp ..@INIT16_CS:.real1-boot_sector
-		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; Same as the jmp above, but 1 byte shorter because of the 16-bit offset.
+		; We must use a far jump with a 16-bit offset here (to jump to a 16-bit protected code segment), because with a 32-bit offset it doesn't work in
+		; 86Box-4.2.1, Intel 430VX chipset, Pentium-S P54C 90 MHz CPU. (Both work in QEMU 2.11.1, VirtualBox and https://copy.sh/v86).
+		;jmp ..@INIT16_CS:.real1-boot_sector  ; This would be a far jump with a 32-bit offset. It doesn't work in 86Box.
+		dw 0xea66, .real1-boot_sector, ..@INIT16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
 .real1:  ; Now we are still in protected mode, but CS points to a 16-bit segment.
 bits 16
 		mov eax, cr0
@@ -408,7 +440,7 @@ bits 16
     %error ERROR_KERNELSEG_HAS_NONZERO_LOW_BYTE  ; This prevents the `mov ah, ..' optimization below.
     times -1 nop
   %endif
-		mov ah, KERNELSEG>>8  ; 1 byte shorter than `mov ex, KERNELSEG'.
+		mov ah, KERNELSEG>>8  ; 1 byte shorter than `mov ax, KERNELSEG'.
 		mov ds, ax
 		mov es, ax
 		mov fs, ax
@@ -435,8 +467,8 @@ bits 16
 		out 0x70, al
 %endif
 		mov al, 1  ; A20 gate direction: enable.
-		push cs  ; Simulate for call.
-		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in 16-bit mode.
+		push cs  ; Simulate far call.
+		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in real mode mode.
 
 		push cs  ; Simulate far call.
 		push strict word linux_entry-setup_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
@@ -480,9 +512,9 @@ bits 32
 		ret  ; This is already in protected mode, but the ret opcode is the same.
 bits 16
 
-; Enables (AL == 1, no wraparound at 1 MiB) or disables (AL == 0, wraparound
-; at 1 MiB) the A20 gate. Must be called in real mode (because it calls an
-; interrupt: int 15h). Ruins: AX, DX.
+; Enables (AL == 1 or other nonzero, no wraparound at 1 MiB) or disables (AL
+; == 0, wraparound at 1 MiB) the A20 gate. Must be called in real mode
+; (because it calls an interrupt: int 15h). Ruins: AX, DX.
 ;
 ; int 15h (AX == 0x2400: disable A20 gate; AX == 0x2401: enable A20 gate)
 ; documentation: https://fd.lod.bz/rbil/interrup/bios_vendor/152400.html and
@@ -595,7 +627,7 @@ bits 32
 		mov edi, (INITSEG<<4)+0xa000-1
 		sub edi, ecx  ; TODO(pts): Abort if too long (>=0xa000-0x30), to avoid buffer overflow.
 		mov [ebx+4*4], edi  ; Change multiboot_info.cmdline back.
-		mov eax, (0xa000-1)|LINUX_CL_MAGIC<<16
+		mov eax, (0xa000-1)|UKH_KERNEL_CMDLINE_MAGIC_VALUE<<16
 		sub eax, ecx
 		ror eax, 16  ; Swap low and high words.
 		mov [(INITSEG<<4)+boot_sector.cl_magic-boot_sector.start], eax  ; Also sets boot_sector.cl_offset.
@@ -668,17 +700,20 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 %endif
 		__ukh_assert_fofs BXS_SIZE
 
-; --- Now the comes the payload, at file offset 0x400.
-;
-; * The payload will be loaded to (KERNELSEG<<4) == 0x10000.
-; * Maximum payload size: 512 KiB, but the bootloader may restrict it further.
-;
+; --- !! API
 
-code32:  ; !!! Rename it to ukh_payload.
+;UKH_KERNEL_CMDLINE_MAGIC_VALUE equ 0xa33f  ; Defined above.
 
-ukh_drive_number_flat equ 0x90007  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
-ukh_real_mode_flat    equ 0x90232  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
-ukh_real_mode_far     equ 0x90242  ; Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
+ukh_drive_number_flat    equ 0x90007  ; Example usage: `mov dl, [ukh_drive_mumber_flat]'. It works with any org. Only valid in protected mode.
+ukh_real_mode_flat       equ 0x90232  ; As `call ...', this only works with `org (KERNELSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
+ukh_real_mode_far        equ 0x90242  ; Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
+ukh_kernel_cmdline_magic equ 0x90020  ; If word [ukh_kernel_cmdline_magic] == UKH_KERNEL_CMDLINE_MAGIC_VALUE (== 0xa33f) in protected mode, then ...
+ukh_kernel_cmdline_ptr   equ 0x90022  ; ... the kernel command-line string is available as a NUL-terminated byte string starting at linear address dword [ukh_kernel_cmdline_ptr] in protected mode.
+
+; See ukh_real_mode below.
+; See ukh_protected_mode below.
+; See ukh_a20_gate_al below.
+; See ukh_halt defined above.
 
 bits 16
 %ifdef UKH_PAYLOAD_32  ; i386+ 32-bit protected-mode payload.
@@ -707,7 +742,7 @@ bits 16
       times -1 nop
     %endif
   %endm
-  %macro ukh_a20_gate_al 1  ; Disables the A20 gate. We must do this in 16-bit mode, with interrupts disabled. Ruins AL.
+  %macro ukh_a20_gate_al 1  ; Enables (AL == 1) or disables (AL == 0) the A20 gate. We must do this in 16-bit mode, with interrupts disabled. Ruins AL.
     %if UKH_BITS==16
       mov al, %1  ; A20 gate direction.
       ;call INITSEG:4  ; ukh_a20_gate_far.
@@ -730,6 +765,14 @@ bits UKH_BITS
   %endif
   code32.padded_end:  ; Use size based on this for some short copies.
 %endm
+
+; --- Now the comes the payload, at file offset 0x400.
+;
+; * The payload will be loaded to (KERNELSEG<<4) == 0x10000.
+; * Maximum payload size: 512 KiB, but the bootloader may restrict it further.
+;
+
+code32:  ; !!! Rename it to ukh_payload.
 
 %ifdef __UKH_PAYLOAD_FILE
   incbin __UKH_PAYLOAD_FILE, UKH_PAYLOAD_FILE_SKIP
