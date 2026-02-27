@@ -436,9 +436,9 @@ cpu 8086
 .boot_flag:	dw BOOT_SIGNATURE  ; (read) 0xaa55 magic number.
 		__ukh_assert_fofs 0x200
 
-setup_sector:  ; 2 == (.boot_sector.setup_sects) sectors of 0x800 bytes. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
+setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
 .start:		__ukh_assert_fofs 0x200
-.jump:		jmp short .setup_linux  ; (read) Jump instruction. Entry point.
+.jump:		jmp short .setup_linux  ; (read) Jump instruction. Linux load protocol entry point, in real mode.
 		__ukh_assert_fofs 0x202
 .header:	db 'HdrS'  ; (read) Protocol >=2.00 signature. Magic signature “HdrS”.
 		__ukh_assert_fofs 0x206
@@ -501,7 +501,7 @@ bits 32
 		;jmp ..@BACK16_CS:.real1-boot_sector  ; This would be a far jump with a 32-bit offset. It doesn't work in 86Box.
 		dw 0xea66, boot_sector.real1-boot_sector, ..@BACK16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
 
-.setup_linux:  ; The 16-bit Linux entry point jumps here from setup_sector.start, as jmp INITSEG+0x20:0.
+.setup_linux:  ; The Linux load protocol entry point jumps here from setup_sector.start in real mode, as `jmp INITSEG+0x20:.setup_linux-setup_sector'.
 bits 16
 %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
@@ -523,7 +523,7 @@ bits 16
 		push cs  ; Simulate far call.
 		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in real mode mode.
 
-		push cs  ; Simulate far call.
+		push cs  ; Simulate far call for .protected_mode_far_low below.
 		push strict word linux_entry-setup_sector  ; Self-modifying code may change the offset here from chain_entry to linux_entry, using .jmp_offset.
 .jmp_offset: equ $-2
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
@@ -665,7 +665,7 @@ bits 32
 		mov ecx, BXS_SIZE>>2
 		rep movsd
 
-		lgdt [byte edi-BXS_SIZE+gdtr-boot_sector]  ; Make subsequent API call ukh_real_mode work. We don't need to reload the CS, DS etc. just yet.
+		lgdt [byte edi-BXS_SIZE+gdtr-boot_sector]  ; Make subsequent API calls to ukh_protected_mode and  ukh_real_mode work. We don't need to reload the CS, DS etc. just yet.
 
   .cmdline:	;xor ecx, ecx  ; Empty command line by default. No need to set it, ECX is already 0.
 		test byte [ebx], MULTIBOOT_INFO_CMDLINE  ; multiboot_info.flags.
@@ -698,14 +698,14 @@ bits 32
 %endif
 
 linux_entry:  ; Setup registers and jump to kernel. We assume that already IF=0 (cli) and DF=0 (cld).
-		; Move code at KERNELSEG<<4 forward by 3 sectors. Copy the data backward (descending), because the destination comes after the source, and they may overlap.
+		; Move code at KERNELSEG<<4 forward by 3 sectors, to make room for 3 (of 4) setup sectors. Copy the data backward (descending), because the destination comes after the source, and they may overlap.
 		std
 		mov esi, (KERNELSEG<<4)+((code32.padded_end-code32-1-3*0x200)&~3)
 		mov edi, (KERNELSEG<<4)+((code32.padded_end-code32-1-3*0x200)&~3)+(3*0x200)
 		mov ecx, (code32.padded_end-code32+3-3*0x200)>>2
 		rep movsd
 		cld
-		; Copy 3 sectors from (INITSEG<<4)+2*0x200 to KERNELSEG<<4.
+		; Copy the last 3 setup sectors from (INITSEG<<4)+2*0x200 to KERNELSEG<<4.
 		lea edi, [esi+4]  ; EDI := KERNELSEG<<4.
 		mov esi, (INITSEG<<4)+2*0x200
 		mov cx, (3*0x200)>>2  ; 1 byte shorter than `mov ecx, ...'.
@@ -752,7 +752,7 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 %endif
 		__ukh_assert_fofs BXS_SIZE
 
-; --- !! API
+; --- Implementation of the UKH API.
 
 ;UKH_KERNEL_CMDLINE_MAGIC_VALUE equ 0xa33f  ; Defined above.
 
@@ -818,7 +818,7 @@ bits UKH_BITS
   code32.padded_end:  ; Use size based on this for some short copies.
 %endm
 
-; --- Now the comes the payload, at file offset 0x400.
+; --- Now comes the payload, at file offset 0x400.
 ;
 ; * The payload will be loaded to (KERNELSEG<<4) == 0x10000.
 ; * Maximum payload size: 512 KiB, but the bootloader may restrict it further.
