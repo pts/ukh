@@ -293,6 +293,10 @@ Testing notes:
 * memtest86+-5.01 needs least 4 MiB of memory in QEMU 2.11.1 (QEMU fails with 3 MiB), hence the `qemu-system-i386 -m 4` flag.
 * Test command line support (even with Multiboot v1) by passing `btrace' in the memtest86+4.01 command line. It should show the *Press any key to advance to the next trace point* message at startup.
 
+See [this forum
+thread](https://sourceforge.net/p/freedos/mailman/message/37871507/) about
+passing a kernel command-line string to the FreeDOS kernel (kernel.sys).
+
 ## TODOs
 
 * Add load protocol: floppy without filesystem.
