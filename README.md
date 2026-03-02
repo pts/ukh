@@ -216,6 +216,7 @@ The Universal Kernel Header (UKH) supports multiple load protocols:
   * Tested with GRUB 1 0.97-29ubuntu68 and GRUB4DOS 0.4.4. Tested with and without the Multiboot v1 header, also with *chainloader* (*chainloader* doesn't work with GRUB 1 0.97, because it only reads 1 sector). Also tested With SYSLINUX 4.07 *linux* and *boot*.
   * QEMU 2.11.1 `qemu-system-i386 -kernel` detects the Linux kernel protocol >=2.00 signature (`HdrS`) first, and then (as a fallback if Linux kernel not found), it detects the Multiboot v1 header.
   * Bootloaders supported: GRUBs (non-UEFI GRUB 2, GRUB 1 (GRUB Legacy), GRUB4DOS) with the *kernel* command, >=QEMU 2.11.1 with the `qemu-system-i386 -kernel` flag (it passes 0xff as the BIOS drive number), and possibly others.
+* floppy: If the UKH kernel image file is written directly to a floppy (with e.g. rawrite or dd), and the BIOS boots from the floppy, then the boot code in the first sector (512 bytes) of the UKH kernel image file will read the rest of the file from the floppy using BIOS int 13h calls. This protocol can receive the BIOS drive number, but it can't receive a kernel command-line string.
 
 Support for these load protocols may be added later:
 
