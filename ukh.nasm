@@ -386,14 +386,14 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor bx, bx
 		int 0x10
 %endif
-		mov bp, sp
 		mov dh, 0  ; Initialize VAR_head := 0.
-		push cx  ; Initialize VAR_sectors_per_track := CL.
+		xchg cl, ch  ; CH := (detected sectors-per-track); CL := 0.
+		push cx  ; Initialize VAR_sectors_per_track := CH. Also push 0 as the high byte.
 		mov cx, 1  ; Initialize VAR_sread := 1; VAR_track := 0.
 		;push cx.  We store VAR_sread  and VAR_track in CX, and not on the stack.
 ;%define VAR_head dh  ; Current head. 0 or 1. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in DH.
-%define VAR_sectors_per_track byte [bp-2]  ; Initialized to the value detected by .detect_sectors_per_track. It won't be changed.
-%define VARW_sectors_per_track_head word [bp-2]
+;%define VAR_sectors_per_track byte [sp-2]  ; Initialized to the value detected by .detect_sectors_per_track. It won't be changed.
+;%define VARW_sectors_per_track_head word [sp-2]
 ;%define VAR_track ch  ; Current track. At most 255. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in CH.
 ;%define VAR_sread cl  ; Number of sectors already read of current track. Initialized to 1, because 1 sector (the boot sector) has already been read. BIOS int 14h AH == 2 (Read sectors) expects the sector index in CL.
 ;%define VARW_sread_track cx
@@ -416,8 +416,9 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ; Input: AL == 1; BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number.
 .load_payload_sectors:
 .set_next:  ; Adds AL to the current sector number.
-		add cl, al  ; CL is VAR_sread.
-		mov ah, VAR_sectors_per_track
+		add cl, al  ; CL is VAR_sread.  !!! Move it down.
+		pop ax  ; AH := VAR_sectors_per_track; AL := 0.
+		push ax  ; Put it back to the stack.
 		cmp cl, ah
 		jne short .set_next3
 		xor dh, 1  ; Next head. DH is VAR_head.
@@ -428,7 +429,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .set_next3:
 		sub ah, cl  ; AH := (number of sectors to read next). It's always positive.
 		mov es, bx  ; ES := PAYLOADSEG, the read destination segment.
-		mov al, 0
+		;mov al, 0  ; Not needed, it's already AL == 0.
 .next_read_count:
 		inc ax
 		add bx, byte 0x200>>4
