@@ -407,16 +407,15 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov al, 1  ; Number of setup sectors to load.
 		call .read_sectors  ; Reads AL sectors. Ruins AH, BX := 0, DH.
 		mov bx, PAYLOADSEG  ; The read destination segment.
-		; Now: AL == 1. BX:0 == address to read the first payload sector to.
+		; Now: AL == 1; BX:0 == address to read the first payload sector to; CX == 2.
 		; Fall through to .load_payload_sectors.
 
 ; Loads the rest of the sectors, making sure no 64 KiB boundary is crossed,
 ; loading whole tracks whenever possible (for fast loading).
 ;
-; Input: AL == 1; BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number.
+; Input: BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number.
 .load_payload_sectors:
-.set_next:  ; Adds AL to the current sector number.
-		add cl, al  ; CL is VAR_sread.  !!! Move it down.
+.set_next:
 		pop ax  ; AH := VAR_sectors_per_track; AL := 0.
 		push ax  ; Put it back to the stack.
 		cmp cl, ah
@@ -439,11 +438,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		jnz short .next_read_count
 .done_read_count:
 		call .read_sectors  ; Reads AL sectors. Ruins AH, BX := 0, DH.
-		mov ah, al
 		mov bx, es
 .add_next:
 		add bx, byte 0x200>>4
-		dec ah
+		dec al
 		jnz short .add_next
 		cmp bx, strict word PAYLOADSEG+((code32.end-code32+0xf)>>4)
 		jb short .set_next
@@ -511,7 +509,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		;
 		jmp (INITSEG+0x20):(setup_sector.setup_chain-setup_sector)
 
-; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Ruins AH, BX := 0, DH.
+; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Adds the number of sectors read to CL. Ruins AH, BX := 0, DH.
 .read_sectors:
 		; Display the progress dot.
 %if 0  ; !!! It doesn't fit.
@@ -529,6 +527,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		int 0x13  ; Read sectors. CH == VAR_track; DH == VAR_head; DL == BIOS drive number.
 		jc short .read_error
 		dec cx  ; Undo `inc cx' above, so CL is VAR_sread again.
+		add cl, al  ; CL is VAR_sread.
 		ret
 
 .read_error:
