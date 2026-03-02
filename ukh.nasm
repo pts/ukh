@@ -388,21 +388,23 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 %endif
 		mov bp, sp
 		push cx  ; Initialize VAR_sectors_per_track := AL; VAR_head := 0.
-		mov ax, 1
-		push ax  ; Initialize VAR_sread := 1; VAR_track := 0.
+		mov cx, 1  ; Initialize VAR_sread := 1; VAR_track := 0.
+		;push cx.  We store VAR_sread  and VAR_track in CX, and not on the stack.
 %define VAR_head byte [bp-1]  ; Current head. 0 or 1. Initialized to 0.
 %define VAR_sectors_per_track byte [bp-2]  ; Initialized to the value detected by .detect_sectors_per_track. It won't be changed.
 %define VARW_sectors_per_track_head word [bp-2]
-%define VAR_track byte [bp-3]  ; Current track. At most 255. Initialized to 0.
-%define VAR_sread byte [bp-4]  ; Number of sectors already read of current track. Initialized to 1, because 1 sector (the boot sector) has already been read.
-%define VARW_sread_track word [bp-4]
+;%define VAR_track ch  ; Current track. At most 255. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in CH.
+;%define VAR_sread cl  ; Number of sectors already read of current track. Initialized to 1, because 1 sector (the boot sector) has already been read. BIOS int 14h AH == 2 (Read sectors) expects the sector index in CL.
+;%define VARW_sread_track cx
 		; Fall through to .load_setup_sector.
 
 .load_setup_sector:
-		dec ax	; AX := 0. Reset FDC.
-		int 0x13  ; Reset FDC. Only works if DL <= 0x7f == 127. !!! Why do we have to reset it here? We could save 5 bytes.
+%if 1  ; !!! Why do we have to reset it here? We could save 4 bytes.
+		xor ax, ax  ; AX := 0. Reset FDC.
+		int 0x13  ; Reset FDC. Only works if DL <= 0x7f == 127.
+%endif
 		mov al, 1  ; Number of setup sectors to load.
-		call .read_sectors  ; Reads AL sectors. Ruins AH, BX := 0, CX := 0, DH.
+		call .read_sectors  ; Reads AL sectors. Ruins AH, BX := 0, DH.
 		mov bx, PAYLOADSEG  ; The read destination segment.
 		; Now: AL == 1. BX:0 == address to read the first payload sector to.
 		; Fall through to .load_payload_sectors.
@@ -410,43 +412,45 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ; Loads the rest of the sectors, making sure no 64 KiB boundary is crossed,
 ; loading whole tracks whenever possible (for fast loading).
 ;
-; Input: AL == 1; BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number; CX == 0.
+; Input: AL == 1; BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number.
 .load_payload_sectors:
 .set_next:  ; Adds AL to the current sector number.
-		add al, VAR_sread
-		mov cl, VAR_sectors_per_track
-		cmp al, cl
+		add al, cl  ; CL is VAR_sread.
+		mov ah, VAR_sectors_per_track
+		cmp al, ah
 		jne short .set_next3
 		xor VAR_head, 1  ; Next head.
 		jnz short .set_next4
-		inc VAR_track  ; Next track.
+		inc ch  ; Next track.
 .set_next4:
 		mov al, 0
 .set_next3:
-		mov VAR_sread, al
-		sub cl, al  ; CL := (number of sectors to read next). It's always positive.
+		mov cl, al  ; CL is VAR_sread.
+		sub ah, al  ; AH := (number of sectors to read next). It's always positive.
 		mov es, bx  ; ES := PAYLOADSEG, the read destination segment.
-		;mov ch, 0  ; Not needed, it's already 0.
-		xor ax, ax
+		mov al, 0
 .next_read_count:
 		inc ax
 		add bx, byte 0x200>>4
 		test bx, 0xfff
 		jz short .done_read_count  ; Stop at 64 KiB boundary.
-		loop .next_read_count
+		dec ah
+		jnz short .next_read_count
 .done_read_count:
-		call .read_sectors  ; Reads AL sectors. Ruins AH, BX := 0, CX := 0, DH.
-		mov cl, al
+		call .read_sectors  ; Reads AL sectors. Ruins AH, BX := 0, DH.
+		mov ah, al
 		mov bx, es
 .add_next:
 		add bx, byte 0x200>>4
-		loop .add_next
+		dec ah
+		jnz short .add_next
 		cmp bx, strict word PAYLOADSEG+((code32.end-code32+0xf)>>4)
 		jb short .set_next
 		; Fall through to .finish_loading.
 
-.finish_loading:  ; Input: CX == 0.
-		mov sp, bp  ; Discard VAR_sread, VAR_track, VAR_sectors_per_track and VAR_head.
+.finish_loading:
+		pop ax  ; Discard VAR_sectors_per_track and VAR_head.
+		xor cx, cx
 		mov es, cx  ; 0.
 		pop di  ; Restore DI := 0x1e<<2. BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
 		pop ax  ; Restore AX := old DPT far pointer offset.
@@ -506,7 +510,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		;
 		jmp (INITSEG+0x20):(setup_sector.setup_chain-setup_sector)
 
-; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Ruins AH, BX := 0, CX := 0, DH.
+; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Ruins AH, BX := 0, DH.
 .read_sectors:
 		; Display the progress dot.
 %if 0  ; !!! It doesn't fit.
@@ -517,14 +521,14 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		pop ax  ; Restore.
 %endif
 		;
-		mov cx, VARW_sread_track  ; CL := byte [sread]; CH := byte [track].
-		inc cx  ; Start counting sectors from 1.
+		;mov cx, VARW_sread_track  ; CL := VAR_sread; CH := VAR_track. It's already set.
+		inc cx  ; CL := sector index.
 		xor bx, bx  ; Read sectors to ES:BX == ES:0.
 		mov dh, VAR_head
 		mov ah, 2  ; Read sectors.
 		int 0x13  ; Read sectors.
 		jc short .read_error
-		xor cx, cx
+		dec cx  ; Undo `inc cx' above, so CL is VAR_sread again.
 		ret
 
 .read_error:
