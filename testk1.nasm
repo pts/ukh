@@ -1,5 +1,6 @@
 %define UKH_PAYLOAD_32
 %define UKH_VERSION_STRING 'testk1'
+%define UKH_PAYLOAD_SEG 0x5a  ; The default would also work.
 ;%define UKH_MULTIBOOT  ; Enabled by default.
 %include 'ukh.nasm'
 
@@ -16,7 +17,8 @@
 		ukh_real_mode
 		mov ah, 0xe  ; Set up printing.
 		xor bx, bx  ; Set up printing.
-		mov si, message  ; ukh.nasm has set up `org' so that this works.
+		;mov si, message  ; ukh.nasm has set up `org' so that this works, but only if (UKH_PAYLOAD_SEG&0xfff)==0.
+		mov si, message+ukh_base16
 .msg_next:	lodsb
 		test al, al
 		jz short .msg_done
@@ -64,6 +66,10 @@ drive_number_to_char_real:  ; Converts BIOS drive number to a character ('0' is 
 		ret
 .not_hdd:	mov al, '?'
 		ret
+
+%if 0
+times 0xabc nop  ; Make it larger.
+%endif
 
 message:	db 'Welcome to testk1! ', 0
 

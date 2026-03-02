@@ -95,7 +95,8 @@ The general model of kernel development with UKH is:
   bytes) from the disk (floppy or HDD). UKH doesn't provide any filesystem
   support, eventually you have to implement that yourself in your kernel.
 * Your kernel payload code (starting with the entry point byte) is loaded to
-  linear address 0x10000 (0x1000:0 in real mode).
+  linear address `UKH_PAYLOAD_SEG<<4` (UKH_PAYLOAD_SEG:0 in real mode). The
+  default of UKH_PAYLOAD_SEG is 0x1000.
 * The [A20 gate](https://en.wikipedia.org/wiki/A20_line) (A20 line) is
   enabled when your kernel payload code starts running. This means that your
   kernel is able to access physical memory above the first 1 MiB. You can
@@ -128,7 +129,7 @@ The general model of kernel development with UKH is:
     * CF == 0 (*clc*).
     * OF == 0, SF == 0, ZF == 1, AF == 0, PF == 1.
     * Other flags are undefined.
-  * CS:EIP == 8:0x10000. Segment descriptor 8 has base 0 (start of physical
+  * CS:EIP == 8:`UKH_PAYLOAD_SEG<<4`. Segment descriptor 8 has base 0 (start of physical
     memory), and it is unlimited (full 4 GiB), and is 32-bit (i386, 32-bit
     protected mode). Actual available memory may be less than 4 GiB.
   * DS == ES == FS == GS == 0x10. Segment descriptor 0x10 has base (start of
@@ -142,11 +143,39 @@ The general model of kernel development with UKH is:
   Linux zImage kernel.)
 * The Global Descriptor Table (GDT) is stored as 0x18 bytes (up to 0x28
   bytes) at linear address 0x90000.
-* NASM `org 0x10000-0x400` is in active, so that your kernel payload code
-  will have NASM virtual address 0x10000, corresponding to the initial EIP
-  value, and it will also make global variables (accessed using CS, DS, ES,
-  FS, GS and SS) work. The 0x400 in the formula above corresponds to the UKH
-  header of 1 KiB.
+* NASM `org ((UKH_PAYLOAD_SEG)<<4)-0x400` is in active, so that your 32-bit code
+  in your kernel payload will have NASM virtual address `UKH_PAYLOAD_SEG<<4`,
+  corresponding to the entry point (initial EIP value) of your payload, and
+  it will also make global variables (accessed using CS, DS, ES, FS, GS and
+  SS) work. The 0x400 in the formula above corresponds to the UKH header of
+  1 KiB.
+* The 16-bit code in your kernel payload can access global variables by
+  adding *ukh_base16* to the offset. For example, the 32-bit `mov esi,
+  message` becomes `mov si, message+ukh_base16`. If UKH_PAYLOAD_SEG is
+  divisible by 0x1000 (i.e. 64 KiB), which is true by default, then the
+  adding of ukh_base16 can be omitted, e.g. `mov si, message`.
+
+UKH supports the following configurations macros which you must `%define`
+before the `%include 'ukh.nasm'`:
+
+* *UKH_PAYLOAD_32*: This must be defined to any value. It indicates that the
+  code at your kernel payload entry point is 32-bit protected mode code.
+  (You can switch to real mode using *ukh_real_mode*, see below.)
+* *UKH_VERSION_STRING*: Optionally set it to a string literal (or anything
+  *db* accepts) describing the product and version number of your kernel.
+  The default is `'ukh'`.
+  Example: `%define UKH_VERSION_STRING 'mykernel v1'`. The Linux *file*
+  utility displays this version string.
+* *UKH_PAYLOAD_SEG*: Optionally set it to a positive integer containing the
+  starting segment to where your kernel payload will be loaded. The default
+  is 0x1000. The linear address is `UKH_PAYLOAD_SEG<<4`.
+* *UKH_PAYLOAD_32_FILE*: Optionally set it to a string literal containing
+  a filename. If defined, UKH will put `incbin UKH_PAYLOAD_32_FILE` at the
+  beginning of the kernel payload code.
+* *UKH_PAYLOAD_FILE_SKIP*: Optionally, set it to the number of bytes to skip
+  at the beginning of UKH_PAYLOAD_32_FILE. If defined, UKH, UKH will put
+  `incbin UKH_PAYLOAD_32_FILE, UKH_PAYLOAD_FILE_SKIP` at the beginning of
+  the kernel payload code.
 
 The UKH API provides to following functionality to your kernel payload:
 
@@ -190,6 +219,8 @@ The UKH API provides to following functionality to your kernel payload:
     the command line will have all the arguments of the *kernel* command),
     and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename and a
     space. QEMU 2.11.1 doesn't prepend anything.
+* See *ukh_base16* for accessing global variables in your 16-bit kernel
+  payload code.
 
 ## Features
 
