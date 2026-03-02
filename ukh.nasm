@@ -500,10 +500,8 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; Fall through to .jump_to_setup_chain.
 
 .jump_to_setup_chain:
-		mov ax, 0xe00+'&'
+		mov ax, 0xe00+'&'  ; Preparation for `Print character in AL' in .setup_chain.
 		xor bx, bx
-		int 0x10  ; Print character in AL.
-		;
 		jmp (INITSEG+0x20):(setup_sector.setup_chain-setup_sector)
 
 ; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Adds the number of sectors read to CL. Ruins AH, BX := 0, DH.
@@ -645,6 +643,7 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 
 .setup_chain:
 bits 16
+		int 0x10  ; Print character in AL.
 		add word [cs:.jmp_offset-setup_sector], byte chain_entry-linux_entry  ; Change the protected mode entry point from linux_entry to chain_entry.
 		jmp short .setup_linux_and_chain
 
