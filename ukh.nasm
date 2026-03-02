@@ -342,7 +342,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		push ds  ; Save old DPT far pointer segment.
 		push si  ; Save old DPT far pointer offset.
 		push bx  ; Save value 0x1e<<2.
-		mov cl, 12  ; Number of bytes to copy. 11 bytes would have been enough, but we want to keep the stack aligned.
+		mov cl, 14  ; Number of bytes to copy. Some sources say 11, others 12, others 14 bytes. We play it safe, and copy 14 bytes.
 		sub sp, cx
 		push ss
 		pop es
@@ -355,7 +355,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; The Disk Parameter Table (DPT) in many BIOSes will not allow multi-sector
 		; reads beyond the defafult maximum of just 7 sectors. We change it
 		; temporarily to our maximum of 36 (used by 2880K ED floppies).
-		mov [ss:di-12+4], cl  ; Patch maximum sector count in the new DPT.
+		mov [ss:di-14+4], cl  ; Patch maximum sector count in the new DPT.
 		; Fall through to .detect_sectors_per_track.
 
 .detect_sectors_per_track:  ; Input: CH == 0 (track number); CL == highest sectors-per-track value to try; DL == BIOS drive number; CS == SS == INITSEG.
