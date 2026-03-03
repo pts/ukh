@@ -105,7 +105,7 @@ kernel:
 .config_file:	db '/menu.lst', 0  ; Override '/boot/grub/menu.lst', 0.
 		times 0x70-($-kernel) db 0
 		assert_at .header+0x70  ; End of GRUB 1 header.
-.code:		mov dl, [ukh_drive_number_flat]  ; BIOS drive number set up by UKH.
+.code:		mov dl, [ukh_drive_number32]  ; BIOS drive number set up by UKH.
 		test dl, dl
 		jns short .use_entire_disk_no_partition  ; For floppy.
 		cmp dl, 0xff
@@ -144,12 +144,12 @@ kernel:
 		mov al, 0xff  ; Must be exactly 2 bytes, for .partition_error.
 .found_partition:
 		mov esp, 0x8200  ; Set up a low enough stack which won't be clobbered by the copies below.
-		push 0x8270  ; Return address of ukh_real_mode_far, GRUB 1 codestart entry point, as far segment:offset (0:0x8270).
-		push ukh_real_mode_far  ; Address of ukh_real_mode_far.
+		push 0x8270  ; Return address of the call to ukh_real_mode_jmp32, GRUB 1 codestart entry point, as far segment:offset (0:0x8270).
+		push ukh_real_mode_jmp32  ; Address of ukh_real_mode_jmp32.
 		db 0x68  ; i386 opcode for `push strict dword, ...'.
 		    rep movsd  ; Do the big copy.
 		    pop eax  ; Pop this 4 bytes of code from the stack. This is safe because interrupts are disabled.
-		    ret  ; Return to ukh_real_mode_far.
+		    ret  ; Return to ukh_real_mode_jmp32.
 		mov esi, kernel
 		mov byte [esi+.install_partition+2-kernel], al   ; Set install_partition to (hdD,P), where P is AL (0, 1, 2 or 3), assuming the previous value was 0xffffff.
 		mov edi, 0x8200
@@ -171,7 +171,7 @@ kernel:
 %endif
 		or ebp, byte -1  ; Make sure install_second_sector is invalid for GRUB 1 0.97 stage2/asm.S.
 		; Pass DL (BIOS drive number, will become boot_drive) and EBP (install_second_sector) to GRUB 1 stage2/asm.S codestart.
-		jmp esp  ; Jumps to the big copy (`rep movsd'), does the copy, returns to ukh_real_mode_far, returns to the GRUB 1 codestart entry point (0:0x8270).
+		jmp esp  ; Jumps to the big copy (`rep movsd'), does the copy, returns to ukh_real_mode_jmp32, returns to the GRUB 1 codestart entry point (0:0x8270).
 
 		times (kernel-$)&3 hlt  ; Align to a multiple of 4, for faster copy.
 .grub1_codestart:

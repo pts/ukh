@@ -1,12 +1,11 @@
 # Universal Kernel Header (UKH)
 
 The Universal Kernel Header (UKH) is a library in NASM assembly which makes
-easy to write i386 (32-bit protected mode) operating system kernels. A
-kernel image file built with UKH is bootable using a multitude of
-bootloaders (hence the qualifier *universal*) such as GRUB, SYSLINUX, LILO,
-NTLDR, QEMU *-kernel*, PXE, FreeDOS boot sector. UKH can be used for writing
-i86 (Intel 16-bit real mode) kernels as well, because it can switch back to
-real mode. UKH provides an API for switching between modes (32-bit protected
+easy to write real i386 (32-bit protected mode) and i86 (Intel 16-bit real
+mode) operating system kernels. A kernel image file built with UKH is
+bootable using a multitude of bootloaders (hence the qualifier *universal*)
+such as GRUB, SYSLINUX, LILO, NTLDR, QEMU *-kernel*, PXE, FreeDOS boot
+sector. UKH provides an API for switching between modes (32-bit protected
 mode and 16-bit real mode), receiving the kernel command-line string, and
 receiving the BIOS boot drive number. UKH supports specifying a version
 string (displayed by the *file* command and GRUB). UKH can compress the
@@ -18,7 +17,7 @@ knowing how to switch between modes.
 
 ## Tutorial
 
-Example kernel source (copy it to file example.nasm):
+Example i386 kernel source (copy it to file example.nasm):
 
 ```
 %define UKH_PAYLOAD_32
@@ -52,29 +51,42 @@ Minimum NASM version required 0.98.39.
 
 Run the example kernel above with: `qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel example.multiboot.bin`
 
-Compile the test kernel ([testk1.nasm](testk1.nasm)) with: `nasm -O0
+Compile the 32-bit test kernel ([testk1.nasm](testk1.nasm)) with: `nasm -O0
 -w+orphan-labels -f bin -o testk1.multiboot.bin testk1.nasm`.
 
-Run the test kernel with: `qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk1.multiboot.bin`
+Run the 32-bit test kernel with: `qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk1.multiboot.bin`
+
+(This is not implemented yet.)
+Compile the 16-bit test kernel ([testk16.nasm](testk16.nasm)) with: `nasm -O0
+-w+orphan-labels -f bin -o testk16.multiboot.bin testk16.nasm`.
+
+Run the 16-bit test kernel with: `qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk16.multiboot.bin`
 
 ## The UKH API
 
 The general model of kernel development with UKH is:
 
 * You write your kernel payload code as a NASM source file containing mostly
-  i386 (32-bit protected mode) code.
-* The kernel starts executing at the first code byte, i.e. the entry point
-  is right after the `%include 'ukh.nasm'` in protected mode. Use the API
-  instruction *ukh_real_mode* to switch to real mode (also does a NASM *bits
-  16*) any time. Use the API instruction *ukh_protected_mode* to switch to
-  protected mode (also does a NASM *bits 32*) any time.
-* When switching to protected mode, interrupts are disabled (i.e. automatic
-  *cli*). To handle the interrupts, switch back to real mode, and then
-  enable interrupts with *sti*.
-  Alternatively, set up your own interrupt handling in protected mode.
+  i386 (32-bit protected mode) and/or i86 (16-bit real mode) code.
+* You indicate that your kernel payload is 32-bit using `%define
+  UKH_PAYLOAD_32`. If so, your code starts as i386 (32-bit protected mode).
+* You indicate that your kernel payload is 16-bit using `%define
+  UKH_PAYLOAD_16`. If so, your code starts as i86 (16-bit real mode).
+* Your kernel payload starts executing at its first code byte, i.e. the entry point
+  is right after the `%include 'ukh.nasm'`.
+* Use the API instruction *ukh_real_mode* to switch to real mode (also does
+  a NASM *bits 16*) any time.
+* Use the API instruction *ukh_protected_mode* to switch to protected mode
+  (also does a NASM *bits 32*) any time. This works even in a 16-bit kernel
+  payload. Its outcome is unspecified and CPU-dependent on a CPU earlier
+  than a 386 (such as 8086, 186 and 286).
+* When switching to 32-bit protected mode, interrupts are disabled (i.e.
+  *automatic cli*). To handle the interrupts, switch back to real mode, and
+  then enable interrupts with *sti*.
+  Alternatively, set up your own interrupt handling in 32-bit protected mode.
 * To call BIOS services (such as *int 10h* for video, *int 13h* for disk
   read and write, *int 16h* for keyboard), switch to real mode first. You
-  can switch back to protected mode right after the call.
+  can switch back to 32-bit protected mode right after the call.
 * Use the UKH API (see below) to receive the kernel command-line string.
 * Use the UKH API (see below) to receive the BIOS boot drive number.
 * To use uninitialized data in your kernel (such as global variables,
@@ -91,6 +103,106 @@ The general model of kernel development with UKH is:
 * Uninitialized data after the loaded kernel image (code and data) is not
   initialized, and can contain arbitary byte values. (This differs from C
   global variables in .bss, which are zero-initialized.)
+
+When using the term *protected mode* in this document, by default we refer
+to the 32-bit protected mode on a 386 or later x86 CPU. (There is also
+16-bit protected mode on a 286 or later x86 CPU, but UKH doesn't support
+that.) 32-bit registers (such as EAX) and most instructions can be used in
+both real mode and 32-bit protected mode. The instruction encoding is
+different. Effective addresses are also different, e.g. `mov al, [ecx+edx]`
+is valid in 32-bit protected mode only, and `mov al, [bx+si]` is valid in
+real mode only (even though ECX, EDX, BX and SI can be initialized in both
+modes). In 32-bit protected mode, 4 GiB of memory can be accessed without
+changing the segment registers (e.g. DS), while in real mode it's just 64
+KiB using the same unchanged segment register.
+
+32-bit protected mode provides access control (to memory and other
+hardware), memory segmentation and memory paging, but in UKH most of these
+are unused, and your kernel payload has unrestricted access to CPU, memory
+and other hardware in both 32-bit protected mode and real mode, and physical
+memory addresses are used (e.g. the top left character on the VGA screen is
+`byte [0xb8000]`).
+
+UKH supports the following configurations macros which you must `%define`
+before the `%include 'ukh.nasm'`:
+
+* *UKH_PAYLOAD_32*: This is an architecture selector macro. It specifies that
+  you are writing a 32-bit kernel payload. Exactly one
+  architector selector macro must be defined to any value. It also indicates
+  that the code at your kernel payload entry point is 32-bit protected mode
+  code, and thus the minimum CPU requirement is 386.
+  You can switch to real mode using *ukh_real_mode*, see below.
+* (This is not implemented yet.)
+  *UKH_PAYLOAD_16*: This is an architecture selector macro. It specifies that
+  you are writing a 16-bit kernel payload. Exactly one
+  architector selector macro must be defined to any value. It also indicates
+  that the code at your kernel payload entry point is 16-bit real mode, and
+  thus the minimum CPU requirement is 8086. (Please note that some
+  bootloaders and load protocols still require a 386.)
+  You can switch to protected mode using *ukh_protected_mode*, see below.
+* *UKH_VERSION_STRING*: Optionally set it to a string literal (or anything
+  *db* accepts) describing the product and version number of your kernel.
+  The default is `'ukh'`.
+  Example: `%define UKH_VERSION_STRING 'mykernel v1'`. The Linux *file*
+  utility displays this version string.
+* *UKH_PAYLOAD_SEG*: Optionally set it to a positive integer containing the
+  starting segment to where your kernel payload will be loaded. The default
+  is 0x1000. The linear address is `UKH_PAYLOAD_SEG<<4`.
+* *UKH_PAYLOAD_32_FILE*: Optionally set it to a string literal containing
+  a filename. If defined, UKH will put `incbin UKH_PAYLOAD_32_FILE` at the
+  beginning of the kernel payload code.
+* *UKH_PAYLOAD_FILE_SKIP*: Optionally, set it to the number of bytes to skip
+  at the beginning of UKH_PAYLOAD_32_FILE. If defined, UKH, UKH will put
+  `incbin UKH_PAYLOAD_32_FILE, UKH_PAYLOAD_FILE_SKIP` at the beginning of
+  the kernel payload code.
+
+Initial state when the 32-bit kernel payload code starts running:
+
+* EAX == EBX == ECX == EDX == ESI == EDI == EBP == 0.
+* CR0 has bit 0 (PE) set, indicating protected mode.
+* EFLAGS:
+  * IF == 0 (*cli*, interrupts disabled in protected mode).
+  * DF == 0 (*cld*).
+  * CF == 0 (*clc*).
+  * OF == 0, SF == 0, ZF == 1, AF == 0, PF == 1.
+  * Other flags are undefined.
+* CS:EIP == 8:`UKH_PAYLOAD_SEG<<4`. By default it's CS:EIP == 8:0x10000.
+  Segment descriptor 8 has base 0 (start
+  of physical memory), and it is unlimited (full 4 GiB), and is 32-bit
+  (i386, 32-bit protected mode). Actual available memory may be less than 4
+  GiB.
+* DS == ES == FS == GS == 0x10. Segment descriptor 0x10 has base (start of
+  physical memory), and it is unlimited (full 4 GiB).
+* SS:ESP == 0x10:0xfffc or SS:ESP == 0x10:`UKH_PAYLOAD_SEG<<4`. The smaller
+  of the two ESP values is used. By default it's SS:ESP == 0xfffc.
+* NMI is disabled.
+* The A20 gate is enabled, i.e. memory above 1 MiB is available.
+* The contents of the Interrupt Descriptor Table (IDT) is undefined. That's
+  no a problem, because interrupts are disabled in protected mode.
+
+Initial state when the 16-bit kernel payload code starts running:
+
+* AX == BX == CX == DX == SI == DI == BP == 0.
+* The high 16-bit words of 32-bit registers (supported on 386 and later)
+  EAX, EBX, ECX, EDX, ESI, EDI, EBP ESP and EFLAGS are undefined.
+* The high 16-bit word of EIP (supported on 386 and later) is 0.
+* FLAGS:
+  * IF == 1 (*sti*, interrupts enabled in real mode).
+  * DF == 0 (*cld*).
+  * CF == 0 (*clc*).
+  * OF == 0, SF == 0, ZF == 1, AF == 0, PF == 1.
+  * Other flags are undefined.
+* CS:IP == UKH_PAYLOAD_SEG:0. By default it's CS:IP == 0x1000:0.
+* CS == DS == ES == FS == GS == UKH_PAYLOAD_SEG. By default it's == 0x1000.
+* SS:SP == 0:0xfffc or SS:SP == 0:`UKH_PAYLOAD_SEG<<4`. The smaller
+  of the two SP values is used. By default it's SS:SP == 0xfffc.
+* NMI is disabled.
+* The A20 gate is in an undefined state.
+* The contents of the Interrupt Descriptor Table (IDT) is undefined. That's
+  no a problem, because interrupts are disabled in protected mode.
+
+More details about using UKH:
+
 * In the beginning, use BIOS service *int 13h* to read sectors (of 512
   bytes) from the disk (floppy or HDD). UKH doesn't provide any filesystem
   support, eventually you have to implement that yourself in your kernel.
@@ -120,107 +232,97 @@ The general model of kernel development with UKH is:
   byte. This works within the first 1 MiB of (physical) memory.
 * Apart from the interrupt flag IF, CS:EIP, DS, ES, FS and GS, other
   registers are unchanged when switching between modes.
-* Initial state when your kernel payload code starts running:
-  * EAX == EBX == ECX == EDX == ESI == EDI == EBP == 0.
-  * CR0 has bit 0 (PE) set, indicating protected mode.
-  * EFLAGS:
-    * IF == 0 (*cli*, interrupts disabled in protected mode).
-    * DF == 0 (*cld*).
-    * CF == 0 (*clc*).
-    * OF == 0, SF == 0, ZF == 1, AF == 0, PF == 1.
-    * Other flags are undefined.
-  * CS:EIP == 8:`UKH_PAYLOAD_SEG<<4`. Segment descriptor 8 has base 0 (start of physical
-    memory), and it is unlimited (full 4 GiB), and is 32-bit (i386, 32-bit
-    protected mode). Actual available memory may be less than 4 GiB.
-  * DS == ES == FS == GS == 0x10. Segment descriptor 0x10 has base (start of
-    physical memory), and it is unlimited (full 4 GiB).
-  * SS:ESP == 0x10:0xfffc.
-  * The A20 gate is enabled, i.e. memory above 1 MiB is available.
-  * The contents of the Interrupt Descriptor Table (IDT) is undefined. That's
-    no a problem, because interrupts are disabled in protected mode.
 * The maximum kernel size (including code, data and uninitialized data) is
   512 KiB == 0x80000 bytes. (This corresponds to the maximum file size of a
   Linux zImage kernel.)
 * The Global Descriptor Table (GDT) is stored as 0x18 bytes (up to 0x28
   bytes) at linear address 0x90000.
-* NASM `org ((UKH_PAYLOAD_SEG)<<4)-0x400` is in active, so that your 32-bit code
-  in your kernel payload will have NASM virtual address `UKH_PAYLOAD_SEG<<4`,
-  corresponding to the entry point (initial EIP value) of your payload, and
-  it will also make global variables (accessed using CS, DS, ES, FS, GS and
-  SS) work. The 0x400 in the formula above corresponds to the UKH header of
-  1 KiB.
-* The 16-bit code in your kernel payload can access global variables by
-  adding *ukh_base16* to the offset. For example, the 32-bit `mov esi,
-  message` becomes `mov si, message+ukh_base16`. If UKH_PAYLOAD_SEG is
-  divisible by 0x1000 (i.e. 64 KiB), which is true by default, then the
-  adding of ukh_base16 can be omitted, e.g. `mov si, message`.
+* NASM `org ((UKH_PAYLOAD_SEG)<<4)-0x400` is in active, so that your 32-bit
+  code in your kernel payload will have NASM virtual address
+  `UKH_PAYLOAD_SEG<<4`, corresponding to the entry point (initial EIP value)
+  of your payload, and it will also make global variables (accessed using
+  CS, DS, ES, FS, GS and SS) work. The 0x400 in the formula above
+  corresponds to the UKH header of 1 KiB.
 
-UKH supports the following configurations macros which you must `%define`
-before the `%include 'ukh.nasm'`:
+The UKH API provides to following functionality in both modes:
 
-* *UKH_PAYLOAD_32*: This must be defined to any value. It indicates that the
-  code at your kernel payload entry point is 32-bit protected mode code.
-  (You can switch to real mode using *ukh_real_mode*, see below.)
-* *UKH_VERSION_STRING*: Optionally set it to a string literal (or anything
-  *db* accepts) describing the product and version number of your kernel.
-  The default is `'ukh'`.
-  Example: `%define UKH_VERSION_STRING 'mykernel v1'`. The Linux *file*
-  utility displays this version string.
-* *UKH_PAYLOAD_SEG*: Optionally set it to a positive integer containing the
-  starting segment to where your kernel payload will be loaded. The default
-  is 0x1000. The linear address is `UKH_PAYLOAD_SEG<<4`.
-* *UKH_PAYLOAD_32_FILE*: Optionally set it to a string literal containing
-  a filename. If defined, UKH will put `incbin UKH_PAYLOAD_32_FILE` at the
-  beginning of the kernel payload code.
-* *UKH_PAYLOAD_FILE_SKIP*: Optionally, set it to the number of bytes to skip
-  at the beginning of UKH_PAYLOAD_32_FILE. If defined, UKH, UKH will put
-  `incbin UKH_PAYLOAD_32_FILE, UKH_PAYLOAD_FILE_SKIP` at the beginning of
-  the kernel payload code.
+* Put macro invocation *ukh_end* to the end of your NASM source file.
+* The label *ukh_payload* points to the first byte of your kernel payload.
+* The label *ukh_payload_end* points right after the last byte of your
+  kernel payload.
+* To halt the system, use the NASM macro *ukh_halt*. It is equivalent to
+  *cli* followed by *hlt* followed by an infinite loop.
 
-The UKH API provides to following functionality to your kernel payload:
+The UKH API provides to following functionality in 32-bit protected mode to
+your kernel payload:
 
 * Use the *ukh_real_mode* NASM macro to switch to real mode. It also does
   *bits 16* for you. Alternatively, you can also do *call
-  ukh_real_mode_flat*, but the former is safer, because it checks that
+  ukh_real_mode32*, but the former is safer, because it checks that
   protected mode is active. It doesn't enable or disable interrupts. It
-  doesn't enable or disable the A20 gate.
+  doesn't enable or disable the A20 gate. It changes segment registers:
+  it sets SS to 0, and the others to UKH_PAYLOAD_SEG. It changes EFLAGS.
+  It keeps the general-purpose registers EAX, EBX, ECX,
+  EDX, ESI, EDI, EBP and ESP intact.
 * Alternatively, to switch to real mode and then jump to a specific
   segment:offset, do `push dword (the_segment<<16)|the_offset` followed by
-  `jmp ukh_real_mode_far`. Make sure you do this only in protected mode,
+  `jmp ukh_real_mode_jmp32`. Make sure you do this only in protected mode,
   and manage the NASM *bits* manually.
-* Use the *ukh_protected_mode* NASM macro to switch to 32-bit protected
-  *mode. It also does *bits 32* for you. It disables interrupts.
-* To halt the system, use the NASM macro *ukh_halt* in either mode. It is
-  equivalent to *cli* followed by *hlt* followed by an infinite loop.
-* To enable (with nonzero AL) or disable (with AL == 0) the A20 gate,
-  use the NASM macro *ukh_a20_gate_al* in real mode. It doesn't work in
-  protected mode, and it checks for *bits* == 16 for you.
-* To get the BIOS boot drive number, get the `byte [ukh_drive_number_flat]`
-  in protected mode (or the eqivalent segment:offset in real mode). If this
-  byte is 0xff, then the BIOS boot drive number is unknown. It's always
+* To get the BIOS boot drive number, get the `byte [ukh_drive_number32]`. If
+  this byte is 0xff, then the BIOS boot drive number is unknown. It's always
   unknown for the Linux load protocol, and it is known for the Multiboot load
   protocol via GRUB and it is known for the chain load protocol. (It's also
   unnown for Multiboot via QEMU, but that's not used, because the Linux load
   protocol is used instead, which also has it unavailable.)
 * The BIOS boot partition number or sector offset (LBA) is not available.
-* To get the kernel command-line string, first check that `word
-  [ukh_kernel_cmdline_magic]` has value UKH_KERNEL_CMDLINE_MAGIC_VALUE (==
-  0xa33f) in protected mode.
-  (If it has a different value, then there is no kernel command-line
-  string.) After that, you can filnd the kernel command-line string as a
-  NUL-terminated byte string starting at linear address pointed to by `dword
-  [ukh_kernel_cmdline_ptr]` in protected mode. The high word of this dword
-  is always 9.
-  * Please note that the address of the kernel command-line string is
-    compatible with Linux kernel load protocol <=2.01, where the linear
-    address is 0x90000 + word [0x90022].
-  * Some bootloaders prepend a string to the kernel command-line string, for
-    example GRUB 1 0.97 and GRUB4DOS prepend the pathname and the space (so
-    the command line will have all the arguments of the *kernel* command),
-    and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename and a
-    space. QEMU 2.11.1 doesn't prepend anything.
-* See *ukh_base16* for accessing global variables in your 16-bit kernel
-  payload code.
+* To get the kernel command-line string, use `dword
+  [ukh_kernel_cmdline_ptr32]` as starting address of a NUL-terminated string.
+  The high word of this dword is always 9. If there was no kernel
+  command-line string, then the NUL-terminated string is empty (i.e. starts
+  with a NUL byte). Please note that
+  some bootloaders prepend a string to the kernel command-line string, for
+  example GRUB 1 0.97 and GRUB4DOS prepend the pathname and the space (so
+  the command line will have all the arguments of the *kernel* command),
+  and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename and a
+  space. QEMU 2.11.1 doesn't prepend anything.
+
+The UKH API provides to following functionality in real mode to your kernel
+payload:
+
+* Add *ukh_base16* to the offset for accessing global variables in real
+  mode. For example, the 32-bit protected-mode `mov esi, message` becomes
+  `mov si, message+ukh_base16`. If UKH_PAYLOAD_SEG is divisible by 0x1000
+  (i.e. 64 KiB), which is true by default, then the adding of ukh_base16 can
+  be omitted, i.e. `mov si, message` also works.
+* Use the *ukh_protected_mode* NASM macro to switch to 32-bit protected
+  mode. It also does *bits 32* for you. It disables interrupts. It doesn't
+  enable or disable the A20 gate.
+  It changes segment registers: it sets CS to 8 (a code segment with base
+  address 0), and the others to 0x10 (a data segment with base address 0).
+  It changes EFLAGS. It keeps the general-purpose registers EAX, EBX, ECX,
+  EDX, ESI, EDI, EBP and ESP intact.
+  Switching to 32-bit protected mode needs a 386 CPU or newer. This is not
+  checked, so if you use *uph_protected_mode* on a system with an earlier
+  CPU (e.g. 8086, 186 or 286), the outcome is unspecified and CPU-dependent.
+* To enable (with nonzero AL) or disable (with AL == 0) the A20 gate,
+  use the NASM macro *ukh_a20_gate_al*.
+* To get the BIOS boot drive number, get the `byte
+  [ukh_apiseg16:ukh_drive_number16]` If this byte is 0xff, then the BIOS
+  boot drive number is unknown. It's always unknown for the Linux load
+  protocol, and it is known for the Multiboot load protocol via GRUB and it
+  is known for the chain load protocol. (It's also unnown for Multiboot via
+  QEMU, but that's not used, because the Linux load protocol is used
+  instead, which also has it unavailable.)
+* The BIOS boot partition number or sector offset (LBA) is not available.
+* To get the kernel command-line string, use `ukh_apiseg16:(word
+  [ukh_apiseg16:ukh_kernel_cmdline_ptr16])` as starting address of a
+  NUL-terminated string. If there was no kernel command-line string, then
+  the NUL-terminated string is empty (i.e. starts with a NUL byte). Please
+  note that some bootloaders prepend a string to the kernel command-line
+  string, for example GRUB 1 0.97 and GRUB4DOS prepend the pathname and the
+  space (so the command line will have all the arguments of the *kernel*
+  command), and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename
+  and a space. QEMU 2.11.1 doesn't prepend anything.
 
 ## Features
 
@@ -331,7 +433,6 @@ passing a kernel command-line string to the FreeDOS kernel (kernel.sys).
 
 ## TODOs
 
-* Add load protocol: floppy without filesystem.
 * Add load protocol: DOS MZ .exe, just to report that this is a kernel file which cannot be executed in DOS.
 * Add load protocol: bootable CD.
 * Copy the kernel command line to linear address 0x903e0. That's the smallest, because earlier bytes are used by the .protected_mode_far and .real_mode library functions.

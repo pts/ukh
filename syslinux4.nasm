@@ -61,7 +61,7 @@ kernel:		;jmp strict short .code
 		mov esp, 0x7b78  ; Set up a low enough stack which won't be clobbered by the copies below.
 		;sti  ; Too early, we are still in protected mode.
 		xor edx, edx
-		mov dl, [ukh_drive_number_flat]  ; BIOS drive number set up by UKH.
+		mov dl, [ukh_drive_number32]  ; BIOS drive number set up by UKH.
 		;mov dl, 0  ; !!! Why isn't the correct drive 0 propagated from GRUB4DOS with `root (fd0)'? for Multiboot, is the root always the `kernel ...' drive? Yes, but for `chainloader' it is respected.
 		; We have to push 12 items for the SYSLINUX .raw_entry.
 		push edx  ; Save drive number, goes to 0x7b74.
@@ -87,12 +87,12 @@ kernel:		;jmp strict short .code
 		; FloppyTable == 0x7bc4  (16 bytes)
 		; STACK_TOP == 0x7c00
 
-		push 0x80f8  ; Return address of ukh_real_mode_far, SYSLINUX entry point, as far segment:offset (0:0x80f8).
-		push ukh_real_mode_far  ; Address of ukh_real_mode_far.
+		push 0x80f8  ; Return address of ukh_real_mode_jmp32, SYSLINUX entry point, as far segment:offset (0:0x80f8).
+		push ukh_real_mode_jmp32  ; Address of ukh_real_mode_jmp32.
 		db 0x68  ; i386 opcode for `push strict dword, ...'.
 		    rep movsd  ; Do the big copy.
 		    pop ebx  ; Pop this 4 bytes of code from the stack. This is safe because interrupts are disabled. Destination is ruined, value doesn't matter.
-		    ret  ; Return to ukh_real_mode_far.
+		    ret  ; Return to ukh_real_mode_jmp32.
 		mov esi, .syslinux4_sys
 		mov edi, 0x8000
 		mov ecx, (.syslinux4_end-.syslinux4_sys+3)>>2
@@ -109,7 +109,7 @@ kernel:		;jmp strict short .code
 .eax_ok:	ukh_protected_mode
 %endif
 		xor eax, eax  ; Will be used by `mov ds, ax' below. !! Is this needed by syslinux4? Or is it a leftover  from GRUB 1?
-		jmp esp  ; Jumps to the big copy (`rep movsd'), does the copy, returns to ukh_real_mode_far, returns to the SYSLINUX entry point (0:0x80f8).
+		jmp esp  ; Jumps to the big copy (`rep movsd'), does the copy, returns to ukh_real_mode_jmp32, returns to the SYSLINUX entry point (0:0x80f8).
 
 		times (kernel-$)&3 hlt  ; Align to a multiple of 4, for faster copy.
 .syslinux4_sys:

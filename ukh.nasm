@@ -74,15 +74,6 @@
     %error ERROR_CONFIG_CONFLICT_PAYLOAD_16_32
     db 1/0
   %endif
-  %ifdef UKH_PAYLOAD_16A
-    %ifdef UKH_PAYLOAD_16B
-      %error ERROR_CONFIG_CONFLICT_PAYLOAD_16_SUBTYPE
-      db 1/0
-    %endif
-  %elifndef UKH_PAYLOAD_16B
-    %error ERROR_CONFIG_MISSING_PAYLOAD_16_SUBTYPE
-    db 1/0
-  %endif
   %error ERROR_UNSUPPORTED_PAYLOAD_16
   db 1/0
 %elifndef UKH_PAYLOAD_32
@@ -114,6 +105,11 @@
 
 ; --- Implementation for the UKH header (boot_sector: 0x200 bytes, setup_sector: 0x200 bytes).
 
+%ifnidn __OUTPUT_FORMAT__, bin
+  %error ERROR_NASM_OUTPUT_FORMAT_MUST_BE_BIN
+  times -1 nop
+%endif
+
 %macro __ukh_assert_fofs 1
   times +(%1)-($-$$) times 0 nop
   times -(%1)+($-$$) times 0 nop
@@ -128,9 +124,7 @@ cpu 8086
 
 BOOT_SIGNATURE equ 0xaa55
 
-UKH_KERNEL_CMDLINE_MAGIC_VALUE equ 0xa33f  ; See above.
-;LINUX_CL_MAGIC equ 0xa33f
-OUR_LINUX_BOOT_PROTOCOL_VERSION equ 0x201  ; 0x201 is the last one which loads everything under 0xa0000 (even 0x9a000). Later versions load code32 above 1 MiB (linear address >=0x100000).
+OUR_LINUX_BOOT_PROTOCOL_VERSION equ 0x201  ; 0x201 is the last one which loads everything under 0xa0000 (even 0x9a000). Later versions load ukh_payload above 1 MiB (linear address >=0x100000).
 
 MULTIBOOT_MAGIC equ 0x1badb002
 MULTIBOOT_FLAG_AOUT_KLUDGE equ 1<<16
@@ -143,7 +137,7 @@ OUR_MULTIBOOT_HEADER_SIZE equ 0x20
 BXS_SIZE equ 0x400  ; Total size of boot sector and setup sectors.
 PAYLOADSEG equ UKH_PAYLOAD_SEG
 LINUXKERNELSEG equ 0x1000  ; This is always 0x1000, that's where the bootloader loads the bytes starting at file offset 0xa00 to.
-INITSEG equ 0x9000  ; We assume that BXS_SIZE bytes at boot_sector (including us) have been loaded to linear address INITSEG<<4.
+APISEG equ 0x9000  ; This mustn't be changed, other code parts depend on this value. We assume that BXS_SIZE bytes at boot_sector (including the 0x200-byte boot_sector and the 0x200-byte setup_sector) have been loaded to linear address APISEG<<4.
 BOOT_ENTRY_ADDR equ 0x7c00
 
 org (PAYLOADSEG<<4)-BXS_SIZE  ; This is for 32-bit protected-mode code in the payload .nasm source. The 32-bit protected-mode code in ukh.nasm works with arbitrary `org', because it always subtracts boot_sector etc. Example: `mov esi, message'.
@@ -159,8 +153,8 @@ LOADFLAG_READ:
 %endm
 
 ; With the Linux load protocol, the bootloader loads the first 5 sectors
-; (0xa00 bytes) (boot_sector and setup sector) to INITSEG<<4 (== 0x90000),
-; the rest (code32) to PAYLOADSEG<<4 (== 0x10000) and then jumps to 0x9020:0
+; (0xa00 bytes) (boot_sector and setup sector) to APISEG<<4 (== 0x90000),
+; the rest (ukh_payload) to PAYLOADSEG<<4 (== 0x10000) and then jumps to 0x9020:0
 ; (setup_sector) in real mode. Thus it starts running the code at the
 ; beginning of setup_sector, the sector following boot_sector.
 ;
@@ -190,7 +184,7 @@ LOADFLAG_READ:
 ; * The FreeDOS (checked version 1.3) kernel gets it from BL.
 ; * The SvarDOS (checked version 20240915) gets it from BL if the initial CS is 0x60 (FreeDOS load protocol), and from DL if the initial CS is 0x70 (DR-DOS load protocol).
 ;
-; What is near 0xa0000 (64 KiB after INITSEG == 0x9000): EBDA (Extended BIOS
+; What is near 0xa0000 (64 KiB after APISEG == 0x9000): EBDA (Extended BIOS
 ; Data Area). Its segment is referenced by a word at 0x40e (in real-mode
 ; memory), which is typically 1 KiB 0x9fc00..0xa0000.
 boot_sector:  ; 1 sector of 0x200 bytes.
@@ -198,12 +192,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .gdt:  ; The first GDT entry (segment descriptor, 8 bytes) can contain arbitrary bytes, so we overlap it with boot code. https://stackoverflow.com/a/33198311
 		; https://wiki.osdev.org/Global_Descriptor_Table#Segment_Descriptor
 		; The GDT has to remain valid until the next lgdt instruction (potentially long), so we'll keep it at linear address 0x90000.
-.code:		cld
-		call .code2
+.code:		mov cx, cs
+		mov ax, 0xe00+'?'  ; Set up error message.
+		call .code3
 .here:		; Not reached, .code2 will pop the return address.
-; API function ukh_a20_gate_far. Call it from real mode at 0x9000:4.
-.a20_gate_far:	jmp near setup_sector.a20_gate_far_low
-.drive_number:  db 0xff  ; byte [0x90007]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 		__ukh_assert_at .gdt+8  ; End if first GDT entry.
 ; base (32 bits): ifr e=0, then first valid linear address
 ; limit (20 bits): if e=0 and g=0, then last valid linear address is (base+limit)&0xffffffff; if e=0 and g=1, then the last valid linear address is (base+((limit+1)<<12)-1)&0xffffffff
@@ -227,26 +219,25 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ..@KERNEL_DS: equ $-.gdt  ; Segment ..@KERNEL_DS == 0x10 descriptor. used when running in protected mode. QEMU 2.11.1 linuxboot.S and GRUB 1 0.97 stage2/asm.S also have these values.
 		EMIT_DATA_SEGMENT_DESCRIPTOR(0, -1, 0, 1, 0, 0, 1, 0, 1, 1)  ; dw 0xffff, 0, 0x9200, 0xcf  ; 32-bit, data, read-write, base 0, limit 4GiB-1, limit granularity 0x1000.
 ..@BACK16_CS: equ $-.gdt  ; Segment ..@BACK16_CS == 0x18 descriptor. Used for switching back to real mode.  Its flags will be reused when back in real mode.
-		EMIT_CODE_SEGMENT_DESCRIPTOR(INITSEG<<4, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, ..., 0x9b00|..., 0|...  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor (except for base=0 there) in CS in QEMU 2.11.1 boot sector load time.
+		EMIT_CODE_SEGMENT_DESCRIPTOR(APISEG<<4, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, ..., 0x9b00|..., 0|...  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor (except for base=0 there) in CS in QEMU 2.11.1 boot sector load time.
 		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9b00, 0  ; 16-bit, code, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in CS in QEMU 2.11.1 boot sector load time.
 		;EMIT_CODE_SEGMENT_DESCRIPTOR(0, 0xffff, 0, 1, 1, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9e00, 0  ; 16-bit, code, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
 		__ukh_assert_at .gdt+4*8  ; Must be at most .cl_magic-.start, so that the GDT doesn' get overwritten.
-.cl_magic:  ; equ .start+0x20  ; (dw) The Linux bootloader will set this to: dw UKH_KERNEL_CMDLINE_MAGIC_VALUE (== 0xa33f).
-.cl_offset: equ $+2  ; equ .start+0x22  ; (dw) The Linux bootloader will set this to (dw) the offset of the kernel command line. The segment is INITSEG.
-.cl_offset_high_word: equ $+4  ; equ .start+0x24  ; (dw) Will be set to 9, so that dword [0x90022] can be used as a pointer to the kernel command line.
-.code2:		pop si  ; SI := actual offset of .here. Self-modifying code: 6 bytes here overlap with word [.cl_magic], word [.cl_offset], word [.cl_offset_high_word].
-		mov cx, cs
-		__ukh_assert_at .cl_offset_high_word-1
-		test ax, strict word 9  ; Also sets word [.cl_offset_high_word] to 9. This 9 is used by dword [ukh_kernel_cmdline_ptr] in protected mode.
-		jmp short .code3
+		__ukh_assert_at .gdt+0x20
+.cl_magic:	dw 0xa33f  ; equ .start+0x20  ; (dw) 0xa33f (LINUX_CL_MAGIC) The Linux bootloader will set this to the same value (LINUX_CL_MAGIC == 0xa33f) if it provides a kernel command-line string.
+.cl_offset:	dw .cl_offset_high_word+1-.start  ; equ .start+0x22  ; (dw) The Linux bootloader (also in kernel load protocol <=2.01) will set this to (dw) the offset of the kernel command line. The segment is APISEG. By default it points to a NUL byte, so the kernel command-line string is empty.
+.cl_offset_high_word: dw APISEG>>12  ; equ .start+0x24  ; (dw) 9. So that dword [0x90022] can be used as a pointer to the kernel command line. Also has its high byte 0, used by the default .cl_offset.
+.drive_number:  db 0xff  ; byte [0x90026]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
+.unused_partition: db 0xff  ; byte [0x90027]. Default value of 0xff indicates unknown. It is always unknown so far.
 		__ukh_assert_at .gdt+5*8
 ..@BACK16_DS: equ $-.gdt  ; Segment ..@BACK16_DS == 0x28 descriptor. Used for switching back to real mode. Its flags will be reused when back in real mode. Won't actually be used to reference memory while switching.
 		EMIT_DATA_SEGMENT_DESCRIPTOR(0,        0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in DS, ES, FS, GS, SS in QEMU 2.11.1 boot sector load time.
 		;EMIT_DATA_SEGMENT_DESCRIPTOR(0,       0xffff, 0, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9200, 0  ; 16-bit, data, base 0. GRUB 1 0.97 stage2/asm.S also has these values.
 		;EMIT_DATA_SEGMENT_DESCRIPTOR(0xfffff, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, read-write, base arbitrary (0xfffff, arbitrary, unused, unusual), limit 0xffff, limit limit granularity 0 (1 byte). upfx_32.nasm has these values.
 .gdt_end:	__ukh_assert_at .gdt+6*8
-.code3:		sub si, byte .here-.start  ; SI := actual offset of .start.
-		mov ax, 0xe00+'?'  ; Set up error message.
+.code3:		pop si  ; SI := actual offset of .here.
+		sub si, byte .here-.start  ; SI := actual offset of .start.
+		cld
 		test cx, cx
 		jnz short .not_chain_protocol
 		cmp si, BOOT_ENTRY_ADDR
@@ -323,21 +314,21 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 
 		; Set up some segments and stack.
 		mov ds, cx  ; After this (until we break DS again) global variables work.
-		mov es, [.initseg_const-.start]  ; ES := INITSEG.
+		mov es, [.initseg_const-.start]  ; ES := APISEG.
 		cli
 		push es
-		pop ss  ; SS := INITSEG.
-		mov sp, 0xa000  ; Set SS:SP to INITSEG:0xa000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
+		pop ss  ; SS := APISEG.
+		mov sp, 0xa000  ; Set SS:SP to APISEG:0xa000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
-		; Copy BXS_SIZE bytes (2 sectors) from DS:0 (actually loaded boot_sector+setup_sector) to INITSEG:0. There is no overlap.
+		; Copy BXS_SIZE bytes (2 sectors) from DS:0 (actually loaded boot_sector+setup_sector) to APISEG:0. There is no overlap.
 		xor si, si
 		xor di, di
 		; Good: SYSLINUX 4.07 *boot*, GRUB4DOS *chainloader*, GRUB *kernel* with Multiboot only and the DOS boot sectors pass the BIOS drive number (e.g. 0x80 for first HDD) in DL. (Or in BL, but we've already copied it to DL.)
 		mov [si+.drive_number-.start], dl  ; Save BIOD drive number to its final UKH boot protocol location.
 		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
 		rep movsw
-		jmp INITSEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to PAYLOADSEG). Needed for the NTLDR load protocol.
+		jmp APISEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to PAYLOADSEG). Needed for the NTLDR load protocol.
 .initseg_const equ $-2
 .after_far_jmp:  ; Input: CX == 0.
 		cmp al, 'l'
@@ -373,10 +364,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov [ss:di-14+4], cl  ; Patch maximum sector count in the new DPT.
 		; Fall through to .detect_sectors_per_track.
 
-.detect_sectors_per_track:  ; Input: CH == 0 (track number); CL == highest sectors-per-track value to try; DL == BIOS drive number; CS == SS == INITSEG.
+.detect_sectors_per_track:  ; Input: CH == 0 (track number); CL == highest sectors-per-track value to try; DL == BIOS drive number; CS == SS == APISEG.
 		; We try these sectors-per-track values: 36, 18, 15, 9. The heads value is always 2. Floppy image sizes: 36: 2880K; 18: 1440K, 15: 1200K, 9: 720K or 360K.
 		; Now: CL == sector number; CH == 0 (track number).
-		mov bx, INITSEG+0x20
+		mov bx, APISEG+0x20
 		mov es, bx
 		mov dh, 0  ; head := 0.
 		xor bx, bx  ; Offset to read to. ES is the segment.
@@ -456,7 +447,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		add bx, byte 0x200>>4
 		dec al
 		jnz short .add_next
-		cmp bx, strict word PAYLOADSEG+((code32.end-code32+0xf)>>4)
+		cmp bx, strict word PAYLOADSEG+((__missing_ukh_end+ukh_payload_end-ukh_payload+0xf)>>4)
 		jb short .set_next
 		; Fall through to .finish_loading.
 
@@ -472,31 +463,31 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		jmp short .jump_to_setup_chain
 
 .not_load_from_floppy:
-		; Copy code32.end-code32 bytes from BOOT_ENTRY_ADDR+BXS_SIZE
+		; Copy ukh_payload_end-ukh_payload bytes from BOOT_ENTRY_ADDR+BXS_SIZE
 		; == 0x8000 to PAYLOADSEG<<4 == 0x10000.
 		;
 		; We copy one sector (0x200) bytes at a time. This is
 		; arbitrary. But we can't copy in one go, because the data
 		; size is >=64 KiB, so we have to modify some segment registers.
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
-		mov bx, (code32.end-code32+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
+		mov bx, (ukh_payload_end-ukh_payload+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		mov cx, ds
 		add cx, strict byte BXS_SIZE>>4  ; Skip over boot_sector+setup_sector.
 		mov ax, PAYLOADSEG
-		; Now: CX == segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4; AX == PAYLOADSEG.
+		; Now: CX == segment of first source sector (with offset 0 it points to ukh_payload), minus BXS_SIZE>>4; AX == PAYLOADSEG.
 		cmp cx, ax
 		jae short .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
 .setup_backward_copy:  ; Copy them backward (descending), because the destination comes after the source, and they may overlap.
 		neg dx  ; DX := -(0x200)>>4. Change copy direction to descending.
-		add ax, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust destination segment to point to the last sector.
-		add cx, strict word (((code32.end-code32+0x1ff)>>9)-1)<<5  ; Adjust source      segment to point to the last sector.
+		add ax, strict word (((ukh_payload_end-ukh_payload+0x1ff)>>9)-1)<<5  ; Adjust destination segment to point to the last sector.
+		add cx, strict word (((ukh_payload_end-ukh_payload+0x1ff)>>9)-1)<<5  ; Adjust source      segment to point to the last sector.
 		;jmp short .after_setup_copy  ; Not needed, falls through.
 ;.setup_forward_copy:
 		;mov dx, 0x200>>4  ; Already set.
 		;mov ax, PAYLOADSEG  ; Already set. AX := segment of first destination sector.
 		;mov es, ax  ; Already set. ES := segment of first destination sector.
-		;add cx, 0 ;   Already set. CX := segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4.
-		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to code32), minus BXS_SIZE>>4.
+		;add cx, 0 ;   Already set. CX := segment of first source sector (with offset 0 it points to ukh_payload), minus BXS_SIZE>>4.
+		;mov ds, cx  ; Already set. DS := segment of first source sector (with offset 0 it points to ukh_payload), minus BXS_SIZE>>4.
 .after_setup_copy:
 		mov ds, cx
 		mov es, ax
@@ -517,7 +508,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .jump_to_setup_chain:
 		mov ax, 0xe00+'&'  ; Preparation for `Print character in AL' in .setup_chain.
 		xor bx, bx
-		jmp (INITSEG+0x20):(setup_sector.setup_chain-setup_sector)
+		jmp (APISEG+0x20):(setup_sector.setup_chain-setup_sector)
 
 ; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Adds the number of sectors read to CL. Ruins AH, BX := 0, DH.
 .read_sectors:
@@ -574,7 +565,7 @@ cpu 386
 		; yet (see https://stackoverflow.com/q/79551879 for
 		; details). Thus we remain in 16-bit protected mode (based
 		; on the descriptor of CS) until the `retf' below.
-		;jmp INITSEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment. With this jump, we would switch to real mode CS.
+		;jmp APISEG:(.real2-boot_sector)  ; 5 bytes: 1 opcode, 2 offset, 2 segment. With this jump, we would switch to real mode CS.
 ;.real2:  ; We are in real mode now in terms of CS.
 		xor ax, ax
 		mov ss, ax  ; This updates the only base in the shadow descriptor to 0.
@@ -610,7 +601,7 @@ cpu 8086
 		__ukh_assert_fofs 0x1f2
 .root_flags:	dw 0  ; (read, modify optional) If set, the root is mounted readonly.
 		__ukh_assert_fofs 0x1f4
-.syssize_low:	dw (code32.padded_end-code32-0xa00+BXS_SIZE+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but Linux kernel protocol <=2.01 supports zImage only, with its maximum size of 512 KiB.
+.syssize_low:	dw (__missing_ukh_end+__payload_padded_end-ukh_payload-0xa00+BXS_SIZE+0xf)>>4  ; (read) The low word of size of the 32-bit code in 16-byte paras. Ignored by GRUB 1 or QEMU. Maximum size allowed: 1 MiB, but Linux kernel protocol <=2.01 supports zImage only, with its maximum size of 512 KiB.
 		__ukh_assert_fofs 0x1f6
 .swap_dev:
 .syssize_high:	dw 0  ; (read) The high word size of the 32-bit code in 16-byte paras. For Linux kernel protocol prior to 2.04, the upper two bytes of the syssize field are unusable, which means the size of a bzImage kernel cannot be determined.
@@ -664,8 +655,12 @@ bits 16
 
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 `qemu-system-i386 -kernel' overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
 
-; API function ukh_protected_mode_far. Call it from real mode at 0x9000:0x230.
-.protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to INITSEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
+; Implementation of real-mode API function `call ukh_apiseg16:ukh_protected_mode16`.
+%if ($-boot_sector)!=0x230
+  %error ERROR_BAD_LOCATION_FOR_PROTECTED_MODE_FAR
+  times -1 nop
+%endif
+.protected_mode_far:  ; Enters zero-based (flat) 32-bit protected mode. Must be called as a far call (with CS pointing to APISEG) from real mode. SS must be 0, high 16 bits of ESP must be 0. Disables interrupts (cli). Keeps all general-purpose registers intact. Ruins EFLAGS.
 		jmp short .protected_mode_far_low
 
 cpu 386
@@ -679,9 +674,9 @@ bits 32
 		shl ax, 12
 		rol eax, 16
 		xchg eax, [esp]  ; Converted linear address in EAX to real-mode segment:offset. Offset in AX is unchanged, segment is (orig_EAX&0xf0000)<<12.
-		; Fall through to ukh_real_mode_far.
-; API function ukh_real_mode_far. Push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
-.real_mode_far:
+		; Fall through to ukh_real_mode_jmp32.
+; API function ukh_real_mode_jmp32. Push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
+.real_mode_jmp32:
 		__ukh_assert_at boot_sector+0x242  ; Address part of the API.
 		push eax  ; Save.
 		mov ax, ..@BACK16_DS
@@ -690,7 +685,13 @@ bits 32
 		;jmp ..@BACK16_CS:.real1-boot_sector  ; This would be a far jump with a 32-bit offset. It doesn't work in 86Box.
 		dw 0xea66, boot_sector.real1-boot_sector, ..@BACK16_CS  ; This is a far jump with a 16-bit offset. It woks in 86Box, and it's 1 byte shorter.
 
-.setup_linux:  ; The Linux load protocol entry point jumps here from setup_sector.start in real mode, as `jmp INITSEG+0x20:.setup_linux-setup_sector'. EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
+; API function ukh_a20_gate_al16.
+.a20_gate_al16:
+bits 16
+		__ukh_assert_at boot_sector+0x24d  ; Address part of the API.
+		jmp short .a20_gate_al16_low
+
+.setup_linux:  ; The Linux load protocol entry point jumps here from setup_sector.start in real mode, as `jmp APISEG+0x20:.setup_linux-setup_sector'. EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
 bits 16
 %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
@@ -714,7 +715,7 @@ bits 16
 %endif
 		mov al, 1  ; A20 gate direction: enable.
 		push cs  ; Simulate far call.
-		call .a20_gate_far_low  ; Enable the A20 gate. We must do this in real mode mode.
+		call .a20_gate_al16_low  ; Enable the A20 gate. We must do this in real mode mode.
 
 		push cs  ; Simulate far call for .protected_mode_far_low below.
 		push strict word setup_linux32-setup_sector  ; Self-modifying code may change the offset here from setup_chain32 to setup_linux32, using .jmp_offset.
@@ -730,7 +731,7 @@ bits 16
 		or al, 1  ; PE := 1.
 		mov cr0, eax
 		mov ax, ..@KERNEL_DS
-		jmp ..@KERNEL_CS:dword ((INITSEG<<4)+.prot_ret-boot_sector)  ; This is 8 bytes, without dword it jumps incorrectly. Jumps to .prot_ret (right below), activates protected mode.
+		jmp ..@KERNEL_CS:dword ((APISEG<<4)+.prot_ret-boot_sector)  ; This is 8 bytes, without dword it jumps incorrectly. Jumps to .prot_ret (right below), activates protected mode.
 .prot_ret:
 bits 32
 		mov ds, ax
@@ -777,7 +778,7 @@ bits 16
 ; the keyboard controller.
 ;
 ; !! TODO(pts): Replace the logic with http://wiki.osdev.org/A20_Line#Final_code_example .
-.a20_gate_far_low:
+.a20_gate_al16_low:
 		; First, try the BIOS int 15h call.
 .try_int15h:	cmp al, 1  ; CF := is_zero(AL).
 		mov ax, 0x2401
@@ -847,14 +848,15 @@ bits 32
 		;cmp eax, 0x2badb002  ; We ignore this Multiboot signature.
 		;xchg ebp, eax  ; EBP := multiboot signature; EAX := junk.
 		mov esi, OUR_MULTIBOOT_LOAD_ADDR
-		test byte [ebx], MULTIBOOT_INFO_BOOTDEV
+		test byte [ebx], MULTIBOOT_INFO_BOOTDEV	 ; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
+
 		jz short .boot_drive_done
 		mov al, [ebx+3*4+3]  ; Boot drive number in multiboot_info.boot_device.
 		mov [esi+boot_sector.drive_number-boot_sector], al  ; Save BIOD drive number to its final UKH boot protocol location.
   .boot_drive_done:
 
-		; Copy the first 2 sectors to INITSEG.
-		mov edi, INITSEG<<4
+		; Copy the first 2 sectors to APISEG.
+		mov edi, APISEG<<4
 		mov ecx, BXS_SIZE>>2
 		rep movsd
 
@@ -862,7 +864,7 @@ bits 32
 
   .cmdline:	;xor ecx, ecx  ; Empty command line by default. No need to set it, ECX is already 0.
 		test byte [ebx], MULTIBOOT_INFO_CMDLINE  ; multiboot_info.flags.
-		jz short .got_cmdline_length
+		jz short .got_cmdline_length  ; If it jumps, because of ECX == 0, an empty command-line-string will be used.
 		mov esi, [ebx+4*4]  ; ESI: pointer to the command line from multiboot_info.cmdline.
   .next_cmdline_char:
 		cmp byte [esi+ecx], 0
@@ -870,33 +872,30 @@ bits 32
 		inc ecx
 		jmp short .next_cmdline_char
   .got_cmdline_length:  ; Now: ECX == length of the command line without the trailing NUL, ESI: address of the command line (invalid if ECX == 0).
-		mov edi, (INITSEG<<4)+0xa000-1
-		sub edi, ecx  ; TODO(pts): Abort if too long (>=0xa000-0x30), to avoid buffer overflow.
-		mov [ebx+4*4], edi  ; Change multiboot_info.cmdline back.
-		mov eax, (0xa000-1)|UKH_KERNEL_CMDLINE_MAGIC_VALUE<<16
-		sub eax, ecx
-		ror eax, 16  ; Swap low and high words.
-		mov [(INITSEG<<4)+boot_sector.cl_magic-boot_sector.start], eax  ; Also sets boot_sector.cl_offset.
-		rep movsb
-		xor eax, eax
-		stosb  ; Add terminating NUL.
-
-		; Copy the payload (code32) to PAYLOADSEG<<4. We must copy late, because earlier we'd overwrite the command line by GRUB 1 0.97 (but not by GRUB4DOS 0.4.4).
+		mov eax, (APISEG<<4)+0xa000-1
+		sub eax, ecx  ; TODO(pts): Abort if too long (>=0xa000-0x30), to avoid buffer overflow.
+		mov [(APISEG<<4)+boot_sector.cl_offset-boot_sector.start], eax  ; Also sets boot_sector.cl_offset_high_word, but keeps it unchanged (APISEG>>12).
+		xchg edi, eax  ; EDI := Start of the copy of our kernel command-line string.
+		;mov [ebx+4*4], edi  ; Change multiboot_info.cmdline to our copy. This is not needed.
+		rep movsb  ; !! Copy it backwards if needed on overlap.
+		mov [edi], cl  ; Add terminating NUL. CL == ECX == 0.
+  .copy_payload:  ; Copy the payload (ukh_payload) to PAYLOADSEG<<4. We must copy late, because earlier we'd overwrite the command line by GRUB 1 0.97 (but not by GRUB4DOS 0.4.4).
 		mov esi, OUR_MULTIBOOT_LOAD_ADDR+BXS_SIZE
 		mov edi, PAYLOADSEG<<4
-		mov ecx, (code32.end-code32+3)>>2
+		mov ecx, (ukh_payload_end-ukh_payload+3)>>2
 		rep movsd
 
+		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
 		jmp short setup_common32
 %endif
 
 setup_linux32:  ; Setup registers and jump to kernel. We assume that already IF=0 (cli) and DF=0 (cld). The stack is not usable yet.
-		; Copy (move) data--code at LINUXKERNELSEG<<4 forward to PAYLOADSEG<<4)=3*0x200 (typically by 3 sectors), to make room for 3 (of 4) setup sectors.
-		mov ecx, (code32.padded_end-code32+3-3*0x200)>>2
+		; Copy (move) data--code at LINUXKERNELSEG<<4 forward to (PAYLOADSEG<<4)+3*0x200 (typically by 3 sectors), to make room for 3 (of 4) setup sectors.
+		mov ecx, (__payload_padded_end-ukh_payload+3-3*0x200)>>2
 %if (LINUXKERNELSEG<<4)<=((PAYLOADSEG<<4)+3*0x200)  ; Copy the data backward (descending), because the destination comes after the source, and they may overlap.
 		std
-		mov esi, (LINUXKERNELSEG<<4)+((code32.padded_end-code32-1-3*0x200)&~3)
-		mov edi, ((PAYLOADSEG<<4)+3*0x200)+((code32.padded_end-code32-1-3*0x200)&~3)
+		mov esi, (LINUXKERNELSEG<<4)+((__payload_padded_end-ukh_payload-1-3*0x200)&~3)
+		mov edi, ((PAYLOADSEG<<4)+3*0x200)+((__payload_padded_end-ukh_payload-1-3*0x200)&~3)
 		rep movsd
 		cld
 		lea edi, [esi+4]  ; EDI := PAYLOADSEG<<4.
@@ -906,15 +905,16 @@ setup_linux32:  ; Setup registers and jump to kernel. We assume that already IF=
 		rep movsd
 		mov edi, PAYLOADSEG<<4
 %endif
-		; Copy the last 3 setup sectors from (INITSEG<<4)+2*0x200 to PAYLOADSEG<<4.
-		mov esi, (INITSEG<<4)+2*0x200
+		; Copy the last 3 setup sectors from (APISEG<<4)+2*0x200 to PAYLOADSEG<<4.
+		mov esi, (APISEG<<4)+2*0x200
 		mov cx, (3*0x200)>>2  ; 1 byte shorter than `mov ecx, ...'.
 		rep movsd
 		; Fall through to setup_common32.
 
-setup_chain32:  ; Fall through to setup_common32.
+setup_chain32:  ; Linux and chain load protocols both reach this.
+		; Fall through to setup_common32.
+
 setup_common32:  ; Linux, chain and Multiboot load protocols all end here. The Multiboot v1 specification allows any (nonworking) value in ESP now.
-		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
 %if PAYLOADSEG>=0x1000
 		mov esp, 0x10000  ; Aligned to 4. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
 %else
@@ -933,8 +933,8 @@ cpu 8086
 ; lgdt or lidt instruction (i.e. long).
 ;
 ; We put this very late in setup_sector, for the size saving in setup_multiboot32.
-gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
-		dd (INITSEG<<4)+boot_sector.gdt-boot_sector  ; gdt base = 0X9xxxx
+gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; GDT limit.
+		dd (APISEG<<4)+boot_sector.gdt-boot_sector  ; GDT base.
 
 %ifdef UKH_MULTIBOOT
 		times BXS_SIZE-OUR_MULTIBOOT_HEADER_SIZE-($-boot_sector) db '-'
@@ -945,9 +945,9 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
   .multiboot.flags: dd OUR_MULTIBOOT_FLAGS
   .multiboot.checksum: dd -MULTIBOOT_MAGIC-OUR_MULTIBOOT_FLAGS
   .multiboot.header_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(multiboot-boot_sector)  ; This is smaller than OUR_MULTIBOOT_LOAD_ADDR. It would be ERR_EXEC_FORMAT if .multiboot.magic came before .multiboot.load_addr.
-  .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for PAYLOADSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and multiboot_copy_code32 instead.
-  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(code32.end-boot_sector)
-  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+(code32.end-boot_sector)  ; No specific .bss to be cleared by the bootloader.
+  .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for PAYLOADSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and setup_multiboot.copy_payload instead.
+  .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(ukh_payload_end-boot_sector)
+  .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+(ukh_payload_end-boot_sector)  ; No specific .bss to be cleared by the bootloader.
   .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(setup_multiboot32-boot_sector)
   .multiboot.end:
   .multiboot.size_check: __ukh_assert_at multiboot+0x20
@@ -956,31 +956,35 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; gdt limit
 %endif
 		__ukh_assert_fofs BXS_SIZE
 
-; --- Implementation of the UKH API.
+; --- The UKH API.
 
-;UKH_KERNEL_CMDLINE_MAGIC_VALUE equ 0xa33f  ; Defined above.
+; UKH API available in 32-bit protected mode.
+ukh_drive_number32         equ 0x90026  ; Example usage: `mov dl, [ukh_drive_mumber_flat]'. It works with any org.
+ukh_real_mode32            equ 0x90232  ; Most users should use macro ukh_protected_mode instead. As `call ...', this only works with `org (PAYLOADSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org.
+ukh_real_mode_jmp32        equ 0x90242  ; Most users should use macro ukh_protected_mode instead. Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242. It works with any org.
+ukh_kernel_cmdline_ptr32   equ 0x90022  ; Kernel command-line string as a NUL-terminated byte string starting at linear address dword [ukh_kernel_cmdline_ptr32]. It works with any org.
+; See macro ukh_real_mode below.
+; See macro ukh_halt defined above.
 
-ukh_drive_number_flat    equ 0x90007  ; Example usage: `mov dl, [ukh_drive_mumber_flat]'. It works with any org. Only valid in protected mode.
-ukh_real_mode_flat       equ 0x90232  ; As `call ...', this only works with `org (PAYLOADSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org. Only valid in protected mode.
-ukh_real_mode_far        equ 0x90242  ; Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242.
-ukh_kernel_cmdline_magic equ 0x90020  ; If word [ukh_kernel_cmdline_magic] == UKH_KERNEL_CMDLINE_MAGIC_VALUE (== 0xa33f) in protected mode, then ...
-ukh_kernel_cmdline_ptr   equ 0x90022  ; ... the kernel command-line string is available as a NUL-terminated byte string starting at linear address dword [ukh_kernel_cmdline_ptr] in protected mode.
-
-; See ukh_real_mode below.
-; See ukh_protected_mode below.
-; See ukh_a20_gate_al below.
-; See ukh_halt defined above.
-; See ukh_base16 above.
+; UKH API available in real mode.
+ukh_apiseg16               equ APISEG
+;ukh_base16                equ -(PAYLOADSEG<<4)  ; Defined above. This is for real-mode code in the payload .nasm source. Example: `mov si, message+ukh_base16'. If (UKH_PAYLOAD_SEG&0xfff)==0 (default), then it can be omitted: `mov si, message'.
+ukh_drive_number16         equ    0x26  ; Example usage: `mov ax, ukh_apiseg16' ++ `mov ds, ax' ++ mov dl, [ukh_drive_mumber16]'. It works with any org.
+ukh_a20_gate_al16          equ   0x24d  ; Most users should use macro ukh_a20_gate_al instead. In real mode, `call ukh_apiseg16:ukh_a20_gate_al16'. It works with any org.
+ukh_protected_mode16       equ   0x230  ; Most users should use macro ukh_protected_mode instead. In real mode, `call ukh_apiseg16:ukh_protected_mode16'. It works with any org.
+ukh_kernel_cmdline_ptr16   equ    0x22  ; Kernel command-line string as a NUL-terminated byte string starting at ukh_apiseg16:(word [ukh_apiseg:ukh_kernel_cmdline_ptr16]). It works with any org.
+; See macro ukh_protected_mode below.
+; See macro ukh_a20_gate_al below.
+; See macro ukh_halt defined above.
 
 bits 16
-%ifdef UKH_PAYLOAD_32  ; i386+ 32-bit protected-mode payload.
+%ifdef UKH_PAYLOAD_32  ; 32-bit kernel payload.
   cpu 386
   %define UKH_BITS 32
   %macro ukh_real_mode 0
     %if UKH_BITS==32
-      ;call setup_sector.real_mode+(INITSEG<<4)-(PAYLOADSEG<<4)+BXS_SIZE  ; ukh_real_mode_flat.
-      ;call $$+0x90232-(PAYLOADSEG<<4)+BXS_SIZE  ; ukh_real_mode_flat. Works independently of `org'.
-      call ukh_real_mode_flat  ; This only works with `org (PAYLOADSEG<<4)-BXS_SIZE'.
+      ;call $$+ukh_real_mode32-(PAYLOADSEG<<4)+BXS_SIZE  ; ukh_real_mode32. Works independently of `org'.
+      call ukh_real_mode32  ; This only works with `org (PAYLOADSEG<<4)-BXS_SIZE'.
       %define UKH_BITS 16
       bits 16
     %else
@@ -990,8 +994,7 @@ bits 16
   %endm
   %macro ukh_protected_mode 0
     %if UKH_BITS==16
-      ;call INITSEG:0x230  ; ukh_protected_mode_far.
-      call 0x9000:0x230  ; ukh_protected_mode_far.
+      call ukh_apiseg16:ukh_protected_mode16
       %define UKH_BITS 32
       bits 32
     %else
@@ -1002,22 +1005,21 @@ bits 16
   %macro ukh_a20_gate_al 1  ; Enables (AL == 1) or disables (AL == 0) the A20 gate. We must do this in 16-bit mode, with interrupts disabled. Ruins AL.
     %if UKH_BITS==16
       mov al, %1  ; A20 gate direction.
-      ;call INITSEG:4  ; ukh_a20_gate_far.
-      call 0x9000:4  ; ukh_a20_gate_far.
+      call ukh_apiseg16:ukh_a20_gate_al16
     %else
       %error ERROR_MUST_BE_IN_REAL_MODE
       times -1 nop
     %endif
   %endm
-%elifdef UKH_PAYLOAD_16
+%elifdef UKH_PAYLOAD_16  ; 16-bit kernel payload.
   cpu 8086
   %define UKH_BITS 16
 %endif
 bits UKH_BITS
 
 %macro ukh_end 0
-  code32.end:
-  %if (PAYLOADSEG&0x1f) && ((PAYLOADSEG+0x20)&~0xfff)!=((PAYLOADSEG+((code32.end-code32+BXS_SIZE+0x1ff)>>4))&~0xfff)
+  ukh_payload_end:
+  %if (PAYLOADSEG&0x1f) && ((PAYLOADSEG+0x20)&~0xfff)!=((PAYLOADSEG+((ukh_payload_end-ukh_payload+BXS_SIZE+0x1ff)>>4))&~0xfff)
     %assign __UKH_VALUE PAYLOADSEG
     %error ERROR_UKH_PAYLOAD_SEG_CROSSES_64K __UKH_VALUE  ; If we allowed this, then .load_payload_sectors wouldn't be able to load the image, because it would cross the 64 KiB boundary imposed by PC floppy BIOS (also SeaBIOS in QEMU 2.11.1).
     ; !! As a workaround, add a temporary, aligned 0x200-byte buffer.
@@ -1026,7 +1028,8 @@ bits UKH_BITS
   %if $-boot_sector<0xa01  ; File size must be at least 5 sectors (0xa00 == 2560 bytes in setup sectors) + 1 byte (in payload) for the old Linux load protocol.
     times 0xa01-($-boot_sector) db 0
   %endif
-  code32.padded_end:  ; Use size based on this for some short copies.
+  __payload_padded_end:  ; Use size based on this for some short copies.
+  __missing_ukh_end equ 0  ;  If you get a NASM error `symbol `__missing_ukh_end' undefined', then just add macro invocation `ukh_end' to the end of your .nasm source.
 %endm
 
 ; --- Now comes the payload, at file offset 0x400.
@@ -1035,7 +1038,7 @@ bits UKH_BITS
 ; * Maximum payload size: 512 KiB, but the bootloader may restrict it further.
 ;
 
-code32:  ; !! Rename it to ukh_payload.
+ukh_payload:
 
 %ifdef __UKH_PAYLOAD_FILE
   incbin __UKH_PAYLOAD_FILE, UKH_PAYLOAD_FILE_SKIP
