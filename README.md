@@ -56,7 +56,6 @@ Compile the 32-bit test kernel ([testk1.nasm](testk1.nasm)) with: `nasm -O0
 
 Run the 32-bit test kernel with: `qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk1.multiboot.bin`
 
-(This is not implemented yet.)
 Compile the 16-bit test kernel ([testk16.nasm](testk16.nasm)) with: `nasm -O0
 -w+orphan-labels -f bin -o testk16.multiboot.bin testk16.nasm`.
 
@@ -132,8 +131,7 @@ before the `%include 'ukh.nasm'`:
   that the code at your kernel payload entry point is 32-bit protected mode
   code, and thus the minimum CPU requirement is 386.
   You can switch to real mode using *ukh_real_mode*, see below.
-* (This is not implemented yet.)
-  *UKH_PAYLOAD_16*: This is an architecture selector macro. It specifies that
+* *UKH_PAYLOAD_16*: This is an architecture selector macro. It specifies that
   you are writing a 16-bit kernel payload. Exactly one
   architector selector macro must be defined to any value. It also indicates
   that the code at your kernel payload entry point is 16-bit real mode, and
@@ -150,10 +148,15 @@ before the `%include 'ukh.nasm'`:
   is 0x1000. The linear address is `UKH_PAYLOAD_SEG<<4`.
 * *UKH_PAYLOAD_32_FILE*: Optionally set it to a string literal containing
   a filename. If defined, UKH will put `incbin UKH_PAYLOAD_32_FILE` at the
-  beginning of the kernel payload code.
+  beginning of the 32-bit kernel payload code. If you define it, UKH will
+  also define *UKH_PAYLOAD_32*.
+* *UKH_PAYLOAD_16_FILE*: Optionally set it to a string literal containing
+  a filename. If defined, UKH will put `incbin UKH_PAYLOAD_16_FILE` at the
+  beginning of the 16-bit kernel payload code. If you define it, UKH will
+  also define *UKH_PAYLOAD_16*.
 * *UKH_PAYLOAD_FILE_SKIP*: Optionally, set it to the number of bytes to skip
   at the beginning of UKH_PAYLOAD_32_FILE. If defined, UKH, UKH will put
-  `incbin UKH_PAYLOAD_32_FILE, UKH_PAYLOAD_FILE_SKIP` at the beginning of
+  `incbin ..., UKH_PAYLOAD_FILE_SKIP` at the beginning of
   the kernel payload code.
 
 Initial state when the 32-bit kernel payload code starts running:

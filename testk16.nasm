@@ -67,6 +67,6 @@ drive_number_to_char_real:  ; Converts BIOS drive number to a character ('0' is 
 times 0xabc nop  ; Make it larger.
 %endif
 
-message:	db 'Welcome to testk1! ', 0
+message:	db 'Welcome to testk16! ', 0
 
 ukh_end

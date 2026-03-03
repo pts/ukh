@@ -52,21 +52,9 @@
   %define __UKH_PAYLOAD_FILE UKH_PAYLOAD_32_FILE
 %endif
 
-%ifdef UKH_PAYLOAD_16A_FILE  ; Must be a filename in quotes.
-  %define UKH_PAYLOAD_16A
+%ifdef UKH_PAYLOAD_16_FILE  ; Must be a filename in quotes.
+  %define UKH_PAYLOAD_16
   %define __UKH_PAYLOAD_FILE UKH_PAYLOAD_16A_FILE
-%endif
-
-%ifdef UKH_PAYLOAD_16B_FILE  ; Must be a filename in quotes.
-  %define UKH_PAYLOAD_16B
-  %define __UKH_PAYLOAD_FILE UKH_PAYLOAD_16B_FILE
-%endif
-
-%ifdef UKH_PAYLOAD_16A
-  %define UKH_PAYLOAD_16
-%endif
-%ifdef UKH_PAYLOAD_16B
-  %define UKH_PAYLOAD_16
 %endif
 
 %ifdef UKH_PAYLOAD_16
@@ -74,8 +62,6 @@
     %error ERROR_CONFIG_CONFLICT_PAYLOAD_16_32
     db 1/0
   %endif
-  %error ERROR_UNSUPPORTED_PAYLOAD_16
-  db 1/0
 %elifndef UKH_PAYLOAD_32
   %error ERROR_MISSING_PAYLOAD_TYPE  ; Add e.g. `%define UKH_PAYLOAD_32'.
   db 1/0
@@ -463,18 +449,18 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		jmp short .jump_to_setup_chain
 
 .not_load_from_floppy:
-		; Copy ukh_payload_end-ukh_payload bytes from BOOT_ENTRY_ADDR+BXS_SIZE
-		; == 0x8000 to PAYLOADSEG<<4 == 0x10000.
+		; Copy ukh_payload_end-ukh_payload bytes (rounded up to
+		; sector size) from DS:BXS_SIZE to PAYLOADSEG:0.
 		;
 		; We copy one sector (0x200) bytes at a time. This is
 		; arbitrary. But we can't copy in one go, because the data
 		; size is >=64 KiB, so we have to modify some segment registers.
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		mov bx, (ukh_payload_end-ukh_payload+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
-		mov cx, ds
+		mov cx, ds  ; CX := ssegment of first source sector (with offset 0 it points to ukh_payload).
 		add cx, strict byte BXS_SIZE>>4  ; Skip over boot_sector+setup_sector.
-		mov ax, PAYLOADSEG
-		; Now: CX == segment of first source sector (with offset 0 it points to ukh_payload), minus BXS_SIZE>>4; AX == PAYLOADSEG.
+		mov ax, PAYLOADSEG  ; AX := copy destination segment.
+		; Now: CX == copy source segment; AX == copy destination segment.
 		cmp cx, ax
 		jae short .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
 .setup_backward_copy:  ; Copy them backward (descending), because the destination comes after the source, and they may overlap.
@@ -650,8 +636,12 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 .setup_chain:
 bits 16
 		int 0x10  ; Print character in AL.
+%ifdef UKH_PAYLOAD_16
+		jmp short .setup_chain16
+%else
 		add word [cs:.jmp_offset-setup_sector], byte setup_chain32-setup_linux32  ; Change the protected mode entry point from setup_linux32 to setup_chain32.
 		jmp short .setup_linux_and_chain
+%endif
 
 		times 0x30-($-.start) db 0  ; QEMU 2.11.1 `qemu-system-i386 -kernel' overwrites some bytes within the .linux_boot_header. Offset 0x30 seems to be the minimum bytes left intact.
 
@@ -693,39 +683,85 @@ bits 16
 
 .setup_linux:  ; The Linux load protocol entry point jumps here from setup_sector.start in real mode, as `jmp APISEG+0x20:.setup_linux-setup_sector'. EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
 bits 16
-%if 0  ; For debugging.
+%ifdef UKH_PAYLOAD_16
+  cpu 8086
+  .setup_linux16:  ; There is some random working stack set up byte Linux bootloader. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+		cld
+		cli
+		hlt  ; !!! Implement this copy.
+		; Fall through to .setup_chain16.
+
+  .setup_chain16:  ; Linux and chain load protocols both reach this. We assume that already DF=0 (cld), and that is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+		; Fall through to .setup_common16.
+
+  .setup_common16:  ; Setup registers and jump to the kernel payload. Linux, chain and Multiboot load protocols all end here. We assume that already DF=0 (cld), and that is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+		xor cx, cx
+		cli  ; To avoid race condition in setting SS and SP on a buggy 8086 CPU.
+		mov ss, cx
+  %if PAYLOADSEG>=0x1000
+		mov sp, (0x10000)-4  ; Aligned to 4. We will keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
+  %else
+		mov sp, (PAYLOADSEG<<4)-4  ; Aligned to 4.
+  %endif
+		sti
+		mov bx, PAYLOADSEG
+		mov ds, bx
+		mov es, bx
+		push bx  ; Segment PAYLOADSEG for the `retf' below.
+		xor bx, bx
+		push bx  ; Offset 0 for the `retf' below.
+		xor dx, dx
+		xor si, si
+		xor di, di
+		xor bp, bp
+		sub ax, ax  ; In EFLAGS, set OF=0, SF=0, ZF=1, AF=0, PF=1 and CF=0 according to the result.
+		retf  ; Jump to the 16-bit kernel payload entry point.
+  cpu 386
+%else
+  %if 0  ; For debugging.
 		mov ax, 0xe00+'S'
 		xor bx, bx
 		int 0x10  ; Print character in AL.
-%endif
-.setup_linux_and_chain:  ; EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
+  %endif
+  .setup_linux_and_chain:  ; EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
 		cli  ; No interrupts allowed. The Linux bootloader usually provides a valid stack, but we don't rely on it.
+		cld
+  %if 1  ; !! What's wrong if we don't bother with NMI?
+		mov al, 0x80  ; Disable NMI. !! Why is this needed? https://wiki.osdev.org/Protected_Mode
+		out 0x70, al
+  %endif
 		xor ax, ax
 		mov ss, ax
-%if PAYLOADSEG>=0x1000
+  %if PAYLOADSEG>=0x1000
 		mov esp, 0xfffc  ; Aligned to 4. Temporary value, setup_common32 will overwrite it. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
-%else
+  %else
 		mov esp, (PAYLOADSEG<<4)-4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it.
-%endif
+  %endif
 
-%if 1  ; !! What's wrong if we don't bother with NMI?
-		; now we want to move to protected mode ... !! Consider alternatives, such as how SYSLINUX 4.07 does it or how GRUB 1 0.97 does it.
-		mov al, 0x80  ; disable NMI for the bootup sequence !! Why is this needed? https://wiki.osdev.org/Protected_Mode
-		out 0x70, al
-%endif
 		mov al, 1  ; A20 gate direction: enable.
 		push cs  ; Simulate far call.
 		call .a20_gate_al16_low  ; Enable the A20 gate. We must do this in real mode mode.
-
+		;
 		push cs  ; Simulate far call for .protected_mode_far_low below.
 		push strict word setup_linux32-setup_sector  ; Self-modifying code may change the offset here from setup_chain32 to setup_linux32, using .jmp_offset.
-.jmp_offset: equ $-2
+  .jmp_offset: equ $-2
 		; When switching back real mode, we want the original IDT, not an empty one like this. GRUB 1 0.97 doesn't set it. QEMU Linux boot and Multiboot v1 boot don't set it. https://stackoverflow.com/q/79526862 ; https://stackoverflow.com/a/5128933 .
 		;lidt [cs:idtr-setup_sector]
 		lgdt [cs:gdtr-setup_sector]
-		;jmp short .protected_mode_far_low  ; Fall through.
+		; Fall through to .protected_mode_far_low in 32-bit mode.
+%endif
+		; Fall through to .protected_mode_far_low in 32-bit mode.
+
 .protected_mode_far_low:
 		cli
+%ifdef UKH_PAYLOAD_16  ; We haven't done it in .setup_linux_and_chain, so we have to do it here.
+		push ds  ; Save.
+		push word APISEG
+		pop ds
+		lgdt [gdtr-boot_sector]
+		pop ds  ; Restore.
+		and esp, 0xffff  ; Set the high word of ESP to 0.
+%endif
 		push eax  ; Save.
 		mov eax, cr0  ; !! Save registers.
 		or al, 1  ; PE := 1.
@@ -844,7 +880,10 @@ bits 32
 %ifdef UKH_MULTIBOOT
   setup_multiboot32:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled, no stack (ESP is invalid). Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
-		cld
+		cld  ; Needed.
+		;mov al, 1  ; A20 gate direction: enable.
+		;push cs  ; Simulate far call.
+		;call_in_real_mode .a20_gate_al16_low  ; Enable the A20 gate. We must do this in real mode mode. Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
 		;cmp eax, 0x2badb002  ; We ignore this Multiboot signature.
 		;xchg ebp, eax  ; EBP := multiboot signature; EAX := junk.
 		mov esi, OUR_MULTIBOOT_LOAD_ADDR
@@ -886,45 +925,58 @@ bits 32
 		rep movsd
 
 		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
+		; The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
+  %if 1  ; !! What's wrong if we don't bother with NMI?
+		mov al, 0x80  ; Disable NMI. !! Why is this needed? https://wiki.osdev.org/Protected_Mode
+		out 0x70, al
+  %endif
+  %ifdef UKH_PAYLOAD_16  ; !!! Switch to real mode instead.
+		; !!! The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
+		cli
+		hlt
+  %else
 		jmp short setup_common32
+  %endif
 %endif
 
-setup_linux32:  ; Setup registers and jump to kernel. We assume that already IF=0 (cli) and DF=0 (cld). The stack is not usable yet.
+%ifndef UKH_PAYLOAD_16
+  setup_linux32:  ; We assume that already IF=0 (cli) and DF=0 (cld). The stack is not usable yet.
 		; Copy (move) data--code at LINUXKERNELSEG<<4 forward to (PAYLOADSEG<<4)+3*0x200 (typically by 3 sectors), to make room for 3 (of 4) setup sectors.
 		mov ecx, (__payload_padded_end-ukh_payload+3-3*0x200)>>2
-%if (LINUXKERNELSEG<<4)<=((PAYLOADSEG<<4)+3*0x200)  ; Copy the data backward (descending), because the destination comes after the source, and they may overlap.
+  %if (LINUXKERNELSEG<<4)<=((PAYLOADSEG<<4)+3*0x200)  ; Copy the data backward (descending), because the destination comes after the source, and they may overlap.
 		std
 		mov esi, (LINUXKERNELSEG<<4)+((__payload_padded_end-ukh_payload-1-3*0x200)&~3)
 		mov edi, ((PAYLOADSEG<<4)+3*0x200)+((__payload_padded_end-ukh_payload-1-3*0x200)&~3)
 		rep movsd
 		cld
 		lea edi, [esi+4]  ; EDI := PAYLOADSEG<<4.
-%else  ; Copy the data forward (ascending), because the destination comes before the source, and they may overlap.
+  %else  ; Copy the data forward (ascending), because the destination comes before the source, and they may overlap.
 		mov esi, LINUXKERNELSEG<<4
 		mov edi, (PAYLOADSEG<<4)+3*0x200
 		rep movsd
 		mov edi, PAYLOADSEG<<4
-%endif
+  %endif
 		; Copy the last 3 setup sectors from (APISEG<<4)+2*0x200 to PAYLOADSEG<<4.
 		mov esi, (APISEG<<4)+2*0x200
 		mov cx, (3*0x200)>>2  ; 1 byte shorter than `mov ecx, ...'.
 		rep movsd
+		; Fall through to setup_chain32.
+
+  setup_chain32:  ; Linux and chain load protocols both reach this.
 		; Fall through to setup_common32.
 
-setup_chain32:  ; Linux and chain load protocols both reach this.
-		; Fall through to setup_common32.
-
-setup_common32:  ; Linux, chain and Multiboot load protocols all end here. The Multiboot v1 specification allows any (nonworking) value in ESP now.
-%if PAYLOADSEG>=0x1000
+  setup_common32:  ; Setup registers and jump to the kernel payload. Linux, chain and Multiboot load protocols all end here. We assume that already IF=0 (cli) and DF=0 (cld). The stack is not usable yet (especially for Multiboot).
+  %if PAYLOADSEG>=0x1000
 		mov esp, 0x10000  ; Aligned to 4. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
-%else
+  %else
 		mov esp, PAYLOADSEG<<4  ; Aligned to 4.
-%endif
+  %endif
 		push esp  ; Jump target of the `jmp dword [esp]' below, the payload entry point.
 		sub eax, eax  ; In EFLAGS, set OF=0, SF=0, ZF=1, AF=0, PF=1 and CF=0 according to the result.
 		times 8 push eax
 		popa  ; Set EAX, EBX, ECX, EDX, ESI, EDI and EBP to 0 (but not ESP). We do it for reproducibility.
-		jmp dword [esp]  ; Jump to the payload emtry point.
+		jmp dword [esp]  ; Jump to the 32-bit kernel payload entry point. !! Size-optimize this to a `ret', making esp above 4 bytes smaller.
+%endif
 bits 16
 cpu 8086
 
@@ -977,45 +1029,52 @@ ukh_kernel_cmdline_ptr16   equ    0x22  ; Kernel command-line string as a NUL-te
 ; See macro ukh_a20_gate_al below.
 ; See macro ukh_halt defined above.
 
-bits 16
 %ifdef UKH_PAYLOAD_32  ; 32-bit kernel payload.
-  cpu 386
+  %define OUR_CPU 386
   %define UKH_BITS 32
-  %macro ukh_real_mode 0
-    %if UKH_BITS==32
-      ;call $$+ukh_real_mode32-(PAYLOADSEG<<4)+BXS_SIZE  ; ukh_real_mode32. Works independently of `org'.
-      call ukh_real_mode32  ; This only works with `org (PAYLOADSEG<<4)-BXS_SIZE'.
-      %define UKH_BITS 16
-      bits 16
-    %else
-      %error ERROR_MUST_BE_IN_PROTECTED_MODE
-      times -1 nop
-    %endif
-  %endm
-  %macro ukh_protected_mode 0
-    %if UKH_BITS==16
-      call ukh_apiseg16:ukh_protected_mode16
-      %define UKH_BITS 32
-      bits 32
-    %else
-      %error ERROR_MUST_BE_IN_REAL_MODE
-      times -1 nop
-    %endif
-  %endm
-  %macro ukh_a20_gate_al 1  ; Enables (AL == 1) or disables (AL == 0) the A20 gate. We must do this in 16-bit mode, with interrupts disabled. Ruins AL.
-    %if UKH_BITS==16
-      mov al, %1  ; A20 gate direction.
-      call ukh_apiseg16:ukh_a20_gate_al16
-    %else
-      %error ERROR_MUST_BE_IN_REAL_MODE
-      times -1 nop
-    %endif
-  %endm
 %elifdef UKH_PAYLOAD_16  ; 16-bit kernel payload.
-  cpu 8086
+  %define OUR_CPU 8086
   %define UKH_BITS 16
 %endif
+cpu OUR_CPU
 bits UKH_BITS
+
+%macro ukh_real_mode 0
+  %if UKH_BITS==32
+    ;call $$+ukh_real_mode32-(PAYLOADSEG<<4)+BXS_SIZE  ; ukh_real_mode32. Works independently of `org'.
+    call ukh_real_mode32  ; This only works with `org (PAYLOADSEG<<4)-BXS_SIZE'.
+    %define UKH_BITS 16
+    bits 16
+  %else
+    %error ERROR_MUST_BE_IN_PROTECTED_MODE
+    times -1 nop
+  %endif
+%endm
+
+%macro ukh_protected_mode 0
+  %if UKH_BITS==16
+    call ukh_apiseg16:ukh_protected_mode16
+    %define UKH_BITS 32
+    %if OUR_CPU==8086 || OUR_CPU<386
+      %define OUT_CPU 386
+      cpu 386
+    %endif
+    bits 32
+  %else
+    %error ERROR_MUST_BE_IN_REAL_MODE
+    times -1 nop
+  %endif
+%endm
+
+%macro ukh_a20_gate_al 1  ; Enables (AL == 1) or disables (AL == 0) the A20 gate. We must do this in 16-bit mode, with interrupts disabled. Ruins AL.
+  %if UKH_BITS==16
+    mov al, %1  ; A20 gate direction.
+    call ukh_apiseg16:ukh_a20_gate_al16
+  %else
+    %error ERROR_MUST_BE_IN_REAL_MODE
+    times -1 nop
+  %endif
+%endm
 
 %macro ukh_end 0
   ukh_payload_end:

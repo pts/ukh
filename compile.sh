@@ -36,7 +36,7 @@ nasm-0.98.39 -O0 -w+orphan-labels -f bin -DLDLINUX_RAW_IN="'ldlinux.raw'" -o sys
 
 # Tested and works with memtest86+-5.01*.bin and memtest85+5.31b*.bin.
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -o testk1.multiboot.bin testk1.nasm  # Includes ukh.nasm.
-# nasm-0.98.39 -O0 -w+orphan-labels -f bin -o testk16.multiboot.bin testk16.nasm  # Includes ukh.nasm.
+ nasm-0.98.39 -O0 -w+orphan-labels -f bin -o testk16.multiboot.bin testk16.nasm  # Includes ukh.nasm.
 # cmp testk1.multiboot.bin.good testk1.multiboot.bin
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DUKH_PAYLOAD_32_FILE="'memtest86+-5.01-dist.bin'"      -DUKH_PAYLOAD_FILE_SKIP=0xa00 -DUKH_VERSION_STRING="'memtest86+-5.01'"        -DUKH_NO_MULTIBOOT -o memtest86+.kernel.bin ukh.nasm
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DUKH_PAYLOAD_32_FILE="'memtest86+-5.01-dist.bin'"      -DUKH_PAYLOAD_FILE_SKIP=0xa00 -DUKH_VERSION_STRING="'memtest86+-5.01-mb'"     -DUKH_MULTIBOOT    -o memtest86+.multiboot.bin ukh.nasm
@@ -61,6 +61,7 @@ rm -f liigboot.zip
 cp -a liigboot.zip.orig liigboot.zip
 mdel -i liigboot.zip ::NETBOOTX.K ::GRUB4DOS.BS
 mcopy -bsomp -i liigboot.zip testk1.multiboot.bin ::R.K
+mcopy -bsomp -i liigboot.zip testk16.multiboot.bin ::R16.K
 mcopy -bsomp -i liigboot.zip memtest86+.nrv.kernel.bin ::M.MB  # Also multiboot.
 mcopy -bsomp -i liigboot.zip memtest86+.kernel.bin ::M.K  # One kernel command-line flag: btrace
 mcopy -bsomp -i liigboot.zip memtest86+.lzma.kernel.bin ::ML.K  # Not multiboot, just for testing.
