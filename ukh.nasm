@@ -299,7 +299,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 %endif
 		mov cx, BOOT_ENTRY_ADDR>>4
 .any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sector; AL is character to print; DL is the BIOS drive number. SS:SP is still populated by the bootloader.
-		xor bx, bx  ; Set up error message.
+		xor bx, bx  ; Set up error message. Also set BX to 0 for .adjust_dpt.
 		int 0x10  ; Print character in AL.
 %if 1  ; !! Remove these debug prints (but some of them indicate progress).
 		xchg al, dl  ; BIOS drive number.
@@ -332,25 +332,26 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		jmp near .not_load_from_floppy
 		; Fall through to .adjust_dpt.
 
-.adjust_dpt:  ; Input: CX == 0.
+.adjust_dpt:  ; Input: CX == 0; BX == 0.
 ; The comments and code from here up to .not_load_from_floppy are based on
 ; linux-2.4.37.11/arch/i386/boot/bootsect.S .
 ;
-		mov ds, cx  ; 0.
-		mov bx, 0x1e<<2  ; BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
+		mov ds, bx  ; 0.
+		mov bl, 0x1e<<2  ; BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
 		lds si, [bx]  ; DS:SI := source.
-		push ds  ; Save old DPT far pointer segment.
-		push si  ; Save old DPT far pointer offset.
-		push bx  ; Save value 0x1e<<2.
 		mov cl, 14  ; Number of bytes to copy. Some sources say 11, others 12, others 14 bytes. We play it safe, and copy 14 bytes.
 		sub sp, cx
+		mov di, sp
+		push ds  ; Save old DPT far pointer segment. Will be popped by .finish_loading.
+		push si  ; Save old DPT far pointer offset. Will be popped by .finish_loading.
+		push bx  ; Save offset value 0x1e<<2. Will be popped by .finish_loading.
 		push ss
 		pop es
-		mov di, sp
 		rep movsb
+		push cx  ; Save segment value 0. Will be popped by .finish_loading.
 		mov ds, cx  ; 0, because of the `rep movsw' above.
 		mov [bx], sp    ; New DPT far pointer offset.
-		mov [bx+2], ss  ; New DPT far poiner segment.
+		mov [bx+2], ss  ; New DPT far pointer segment.
 		mov cl, 36  ; CH == 0 because of the `rep movsb' above.
 		; The Disk Parameter Table (DPT) in many BIOSes will not allow multi-sector
 		; reads beyond the defafult maximum of just 7 sectors. We change it
@@ -446,14 +447,14 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; Fall through to .finish_loading.
 
 .finish_loading:
-		xor cx, cx
-		mov es, cx  ; 0.
+		pop es  ; Restore ES := 0.
 		pop di  ; Restore DI := 0x1e<<2. BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
 		pop ax  ; Restore AX := old DPT far pointer offset.
 		pop bx  ; Restore BX := old DPT far pointer segment.
 		stosw  ; Set DPT offset to old.
 		xchg ax, bx  ; Ruins BX.
 		stosw  ; Set DPT segment to old.
+		;lea sp, [di-14]  ; Not needed, we can waste 14 bytes of stack space temporarily.
 		jmp short .jump_to_setup_chain
 
 .not_load_from_floppy:
