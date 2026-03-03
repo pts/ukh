@@ -258,7 +258,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .halt:		ukh_halt
 		; Not reached.
 
-.chain_protocol:  ; Now: CX == 0; DS == 0; SI == 0x7c00 == BOOT_ENTRY_ADDR; DL is the BIOS drive number.
+.chain_protocol:  ; Now: CX == 0; DS == 0; SI == 0x7c00 == BOOT_ENTRY_ADDR; DL == BIOS drive number; SS:SP is valid but unknown.
 		xor bx, bx  ; Set up error message.
 		mov al, 'b'
 		int 0x10  ; Print character in AL.
@@ -281,7 +281,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		jmp short .halt
 .booting_from_floppy:
 		mov al, 'l'
-		db 0xa9  ; Opcode byte of `test ax, ...', to skip over the `mov al, 's'' instruction below.
+		db 0xa9  ; Opcode byte of `test ax, strict word ...', to skip over the `mov al, 's'' instruction below.
 .cmp_matches:
 		mov al, 's'
 %if $-.cmp_matches!=2
@@ -298,25 +298,25 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xchg al, dl
 %endif
 
-		; Set up some segments and stack.
+		; Initialize DS := BOOT_ENTRY_ADDR>>4; ES := APISEG; SS:SP.
 		mov ds, cx  ; After this (until we break DS again) global variables work.
 		mov es, [.initseg_const-.start]  ; ES := APISEG.
 		cli
 		push es
-		pop ss  ; SS := APISEG.
-		mov sp, 0xa000  ; Set SS:SP to APISEG:0xa000 (== 0x9000:0xa000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
+		pop ss  ; SS := APISEG.  ; mov ss, ... .
+		mov sp, ss  ; Set SS:SP to APISEG:APISEG (== 0x9000:0x9000), similarly to how QEMU 2.11.1 `-kernel' acts as a Linux bootloader, it sets 0x9000:(0xa000-cmdline_size-0x10).
 		sti
 
 		; Copy BXS_SIZE bytes (2 sectors) from DS:0 (actually loaded boot_sector+setup_sector) to APISEG:0. There is no overlap.
 		xor si, si
 		xor di, di
 		; Good: SYSLINUX 4.07 *boot*, GRUB4DOS *chainloader*, GRUB *kernel* with Multiboot only and the DOS boot sectors pass the BIOS drive number (e.g. 0x80 for first HDD) in DL. (Or in BL, but we've already copied it to DL.)
-		mov [si+.drive_number-.start], dl  ; Save BIOD drive number to its final UKH boot protocol location.
+		mov [si+.drive_number-.start], dl  ; Save BIOS drive number to its final UKH boot protocol location.
 		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
 		rep movsw
 		jmp APISEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to PAYLOADSEG). Needed for the NTLDR load protocol.
 .initseg_const equ $-2
-.after_far_jmp:  ; Input: CX == 0.
+.after_far_jmp:  ; Input: CX == 0; BX == 0.
 		cmp al, 'l'
 		;jne short .not_load_from_floppy
 		je short .adjust_dpt
@@ -324,9 +324,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; Fall through to .adjust_dpt.
 
 .adjust_dpt:  ; Input: CX == 0; BX == 0.
-; The comments and code from here up to .not_load_from_floppy are based on
-; linux-2.4.37.11/arch/i386/boot/bootsect.S .
-;
+; The code from here up to .not_load_from_floppy is based on linux-2.4.37.11/arch/i386/boot/bootsect.S .
 		mov ds, bx  ; 0.
 		mov bl, 0x1e<<2  ; BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
 		lds si, [bx]  ; DS:SI := source.
@@ -358,7 +356,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov dh, 0  ; head := 0.
 		xor bx, bx  ; Offset to read to. ES is the segment.
 .detect_sectors_per_track_again:
-		mov ax, 0x201  ; AH := 2 (Read sectors); AL := 1 (read 1 sector).
+		mov ax, 0x201  ; AH := 2 (Read sectors); AL := 1 (number of sectors to read).
 		int 0x13  ; Read sectors.
 		jnc short .found_sectors_per_track
 		shr cl, 1
@@ -451,15 +449,20 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .not_load_from_floppy:
 		; Copy ukh_payload_end-ukh_payload bytes (rounded up to
 		; sector size) from DS:BXS_SIZE to PAYLOADSEG:0.
+		mov cx, ds  ; CX := ssegment of first source sector (with offset 0 it points to ukh_payload).
+		add cx, strict byte BXS_SIZE>>4  ; Skip over boot_sector+setup_sector.
+		mov ax, PAYLOADSEG  ; AX := copy destination segment.
+		mov bx, (ukh_payload_end-ukh_payload+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
+		; Fall through to .copy_payload.
+
+.copy_payload:
+		; Copy BX sectors from CX:0 to AX:0. BX must not be 0. Then
+		; jump to setup_sector.setup_chain.
 		;
 		; We copy one sector (0x200) bytes at a time. This is
 		; arbitrary. But we can't copy in one go, because the data
 		; size is >=64 KiB, so we have to modify some segment registers.
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
-		mov bx, (ukh_payload_end-ukh_payload+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
-		mov cx, ds  ; CX := ssegment of first source sector (with offset 0 it points to ukh_payload).
-		add cx, strict byte BXS_SIZE>>4  ; Skip over boot_sector+setup_sector.
-		mov ax, PAYLOADSEG  ; AX := copy destination segment.
 		; Now: CX == copy source segment; AX == copy destination segment.
 		cmp cx, ax
 		jae short .after_setup_copy  ; Copy them in forward (ascending), because the destination comes before the source, and they may overlap.
@@ -489,12 +492,14 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov es, ax
 		dec bx
 		jnz short .copy_sector
+		; Now: CX == 0.
 		; Fall through to .jump_to_setup_chain.
 
 .jump_to_setup_chain:
 		mov ax, 0xe00+'&'  ; Preparation for `Print character in AL' in .setup_chain.
 		xor bx, bx
-		jmp (APISEG+0x20):(setup_sector.setup_chain-setup_sector)
+		jmp (APISEG+0x20):(setup_sector.setup_chain-setup_sector)  ; Self-modifying code: target offset may be changed from .setup_chain to .setup_linux_cont16.
+.jmp_offset2: equ $-4
 
 ; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Adds the number of sectors read to CL. Ruins AH, BX := 0, DH.
 .read_sectors:
@@ -633,13 +638,11 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 		__ukh_assert_fofs 0x226
 .linux_boot_header.end:
 
+%ifndef UKH_PAYLOAD_16  ; !!! Use this space better, for chain only. For Linux, QEMU would overwrite it.
 .setup_chain:
 bits 16
 		int 0x10  ; Print character in AL.
-%ifdef UKH_PAYLOAD_16
-		jmp short .setup_chain16
-%else
-		add word [cs:.jmp_offset-setup_sector], byte setup_chain32-setup_linux32  ; Change the protected mode entry point from setup_linux32 to setup_chain32.
+		add word [cs:.jmp_offset-setup_sector], byte setup_chain32-setup_linux32  ; Self-modifying code: change the protected mode entry point from setup_linux32 to setup_chain32.
 		jmp short .setup_linux_and_chain
 %endif
 
@@ -679,22 +682,48 @@ bits 32
 .a20_gate_al16:
 bits 16
 		__ukh_assert_at boot_sector+0x24d  ; Address part of the API.
+%ifdef UKH_PAYLOAD_16
+		jmp near .a20_gate_al16_low
+%else
 		jmp short .a20_gate_al16_low
+%endif
 
 .setup_linux:  ; The Linux load protocol entry point jumps here from setup_sector.start in real mode, as `jmp APISEG+0x20:.setup_linux-setup_sector'. EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
 bits 16
 %ifdef UKH_PAYLOAD_16
-  cpu 8086
-  .setup_linux16:  ; There is some random working stack set up byte Linux bootloader. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
-		cld
+  .setup_linux16:  ; There is some random working stack set up by the Linux bootloader. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+  cpu 386
 		cli
-		hlt  ; !!! Implement this copy.
-		; Fall through to .setup_chain16.
+		cld
+		push strict word APISEG
+		pop ds
+		add word [boot_sector.jmp_offset2-boot_sector], byte .setup_linux_cont16-.setup_chain  ; Self-modifying code.
+		mov ax, PAYLOADSEG+((0xa00-BXS_SIZE)>>4)  ; Copy destination segment.
+		mov cx, PAYLOADSEG  ; Copy source segment.
+		push cx  ; Save.
+		mov bx, (__payload_padded_end-ukh_payload-(0xa00-BXS_SIZE)+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
+		jmp APISEG:(boot_sector.copy_payload-boot_sector)  ; When done, it will jump to .setup_linux_cont16, as modified above.
+  .setup_linux_cont16:
+		push cs
+		pop ds  ; DS := APISEG+0x20.
+		pop es  ; Restore ES := PAYLOADSEG.
+		mov si, BXS_SIZE-0x200
+		xor di, di
+		mov ch, (0xa00-BXS_SIZE)>>1>>8  ; mov cx, (0xa00-BXS_SIZE)>>1  ; CL is already 0, as set by boot_sector.copy_payload.
+		rep movsw
+		db 0xa9  ; Opcode byte of `test ax, strict word ...', to skip over the `int 0x10' instruction below.
+		; Fall thrugh to .setup_chain.
 
-  .setup_chain16:  ; Linux and chain load protocols both reach this. We assume that already DF=0 (cld), and that is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+  .setup_chain:  ; Linux and chain load protocols both reach this. We assume that already DF=0 (cld), and that there is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+  cpu 8086
+		int 0x10  ; Print character in AL.
+  %if $-.setup_chain!=2
+    %error ERROR_BAD_INT_INSTRUCTION_SIZE  ; Required by `db 0xa9' above.
+    times -1 nop
+  %endif
 		; Fall through to .setup_common16.
 
-  .setup_common16:  ; Setup registers and jump to the kernel payload. Linux, chain and Multiboot load protocols all end here. We assume that already DF=0 (cld), and that is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+  .setup_common16:  ; Setup registers and jump to the kernel payload. Linux, chain and Multiboot load protocols all end here. We assume that already DF=0 (cld), and that there is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
 		xor cx, cx
 		cli  ; To avoid race condition in setting SS and SP on a buggy 8086 CPU.
 		mov ss, cx
@@ -733,7 +762,7 @@ bits 16
 		xor ax, ax
 		mov ss, ax
   %if PAYLOADSEG>=0x1000
-		mov esp, 0xfffc  ; Aligned to 4. Temporary value, setup_common32 will overwrite it. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
+		mov esp, (0x1000)-4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
   %else
 		mov esp, (PAYLOADSEG<<4)-4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it.
   %endif
@@ -756,7 +785,7 @@ bits 16
 		cli
 %ifdef UKH_PAYLOAD_16  ; We haven't done it in .setup_linux_and_chain, so we have to do it here.
 		push ds  ; Save.
-		push word APISEG
+		push strict word APISEG
 		pop ds
 		lgdt [gdtr-boot_sector]
 		pop ds  ; Restore.
