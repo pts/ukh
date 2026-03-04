@@ -730,7 +730,7 @@ bits 16
   %if PAYLOADSEG>=0x1000
 		mov sp, (0x10000)-4  ; Aligned to 4. We will keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
   %else
-		mov sp, (PAYLOADSEG<<4)-4  ; Aligned to 4.
+		mov sp, PAYLOADSEG<<4  ; Aligned to 4.
   %endif
 		sti
 		mov bx, PAYLOADSEG
@@ -762,9 +762,9 @@ bits 16
 		xor ax, ax
 		mov ss, ax
   %if PAYLOADSEG>=0x1000
-		mov esp, (0x1000)-4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
+		mov esp, (0x10000)-4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it. We keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
   %else
-		mov esp, (PAYLOADSEG<<4)-4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it.
+		mov esp, PAYLOADSEG<<4  ; Aligned to 4. Temporary value, setup_common32 will overwrite it.
   %endif
 
 		mov al, 1  ; A20 gate direction: enable.
@@ -949,6 +949,13 @@ bits 32
   .copy_payload:  ; Copy the payload (ukh_payload) to PAYLOADSEG<<4. We must copy late, because earlier we'd overwrite the command line by GRUB 1 0.97 (but not by GRUB4DOS 0.4.4).
 		mov esi, OUR_MULTIBOOT_LOAD_ADDR+BXS_SIZE
 		mov edi, PAYLOADSEG<<4
+  %ifdef UKH_PAYLOAD_16  ; Stack setup for `jmp setup_sector.real_mode_jmp32' below.
+    %if PAYLOADSEG>=0x1000
+		mov esp, (0x10000)-4  ; Aligned to 4. We will keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
+    %else
+		mov esp, edi  ; mov esp, PAYLOADSEG<<4  ; Aligned to 4.
+    %endif
+  %endif
 		mov ecx, (ukh_payload_end-ukh_payload+3)>>2
 		rep movsd
   %if 1  ; !! What's wrong if we don't bother with NMI?
@@ -960,11 +967,6 @@ bits 32
 		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
 		; The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
   %ifdef UKH_PAYLOAD_16
-    %if PAYLOADSEG>=0x1000
-		mov esp, (0x10000)-4  ; Aligned to 4. We will keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
-    %else
-		mov esp, (PAYLOADSEG<<4)-4  ; Aligned to 4.
-    %endif
 		push strict dword (APISEG+0x20)<<16|(setup_sector.setup_common16-setup_sector)  ; Stack set up above.
 		jmp setup_sector.real_mode_jmp32
   %else
