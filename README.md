@@ -61,6 +61,41 @@ Compile the 16-bit test kernel ([testk16.nasm](testk16.nasm)) with: `nasm -O0
 
 Run the 16-bit test kernel with: `qemu-system-i386 -M pc-1.0 -m 4 -nodefault -vga cirrus -kernel testk16.multiboot.bin`
 
+## System requirements
+
+Kernels built with UKH will boot on systems fulfilling all of these:
+
+* IBM PC or compatible
+* 386 or later x86 CPU
+* at least 2 MiB of RAM
+* BIOS boot (i.e. not UEFI)
+
+For 16-bit kernel payloads and an 8086-compatible bootloader, the CPU
+requirement can be relaxed to 8086 or later x86 CPU, and the RAM
+requirement can be relaxed to at least 640 KiB. Please note that most
+bootloaders that can load a kernel image file are not 8086-compatible.
+
+Known 8086-compatible bootloaders:
+
+* UKH with the floppy load protocol, i.e. when the kernel image is written
+  to a floppy as a raw disk image, without a filesystem
+* DR-DOS, EDR-DOS, SvarDOS and FreeDOS boot sectors loading the kernel from
+  the file named kernel.sys on a FAT filesystem
+* ShoeLace (not supported by UKH)
+* the Minix 1.6--2.x bootloader (not supported by UKH)
+
+Known bootloaders which need a 386 or later CPU, thus incompatible with the
+8086:
+
+* all variants of GRUB (GRUB 1, GRUB Legacy, non-UEFI GRUB 2, UEFI GRUB 2,
+  GRUB4DOS)
+* SYSLINUX, ISOLINUX and PXELINUX
+* QEMU `qemu-system-i386 -kernel`
+* loadlin
+* LILO
+* Windows NT NTLDR, BOOTMGR etc.
+* PXE network boot
+
 ## The UKH API
 
 The general model of kernel development with UKH is:
