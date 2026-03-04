@@ -659,7 +659,7 @@ bits 16
 cpu 386
 bits 32
 
-; API function ukh_real_mode. Call it from 32-bit protected mode at 0x90232.
+; API function ukh_real_mode32. Call it from 32-bit protected mode at 0x90232.
 		__ukh_assert_at boot_sector+0x232  ; Address part of the API.
 .real_mode:  ; Enters (16-bit) real mode. Must be called as a near call from zero-based (flat) 32-bit protected mode. High 16 bits of ESP must be 0. EIP must be less than 1 MiB. Protected-mode CS will be EIP>>16<<12. Sets DS, ES, FS, GS to PAYLOADSEG, and SS to 0. Doesn't enable (sti) or disable (cli) interrupts. The caller may enable interrupts after the call. Keeps all general-purpose registers intact. Ruins EFLAGS.
 		xchg eax, [esp]
@@ -907,7 +907,7 @@ bits 16
 bits 32
 
 %ifdef UKH_MULTIBOOT
-  setup_multiboot32:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled, no stack (ESP is invalid). Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
+  setup_multiboot:  ; Loaded to OUR_MULTIBOOT_LOAD_ADDR by the bootloader, interrupts disabled, no stack (ESP is invalid). Works according to the Multiboot v1 specification: https://www.gnu.org/software/grub/manual/multiboot/multiboot.html
 		;cli  ; Not needed, https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Machine-state mandates it.
 		cld  ; Needed.
 		;mov al, 1  ; A20 gate direction: enable.
@@ -922,14 +922,13 @@ bits 32
 		mov al, [ebx+3*4+3]  ; Boot drive number in multiboot_info.boot_device.
 		mov [esi+boot_sector.drive_number-boot_sector], al  ; Save BIOD drive number to its final UKH boot protocol location.
   .boot_drive_done:
-
+  .copy_2_sectors:
 		; Copy the first 2 sectors to APISEG.
 		mov edi, APISEG<<4
 		mov ecx, BXS_SIZE>>2
 		rep movsd
-
+  .lgdt:
 		lgdt [byte edi-BXS_SIZE+gdtr-boot_sector]  ; Make subsequent API calls to ukh_protected_mode and  ukh_real_mode work. We don't need to reload the CS, DS etc. just yet.
-
   .cmdline:	;xor ecx, ecx  ; Empty command line by default. No need to set it, ECX is already 0.
 		test byte [ebx], MULTIBOOT_INFO_CMDLINE  ; multiboot_info.flags.
 		jz short .got_cmdline_length  ; If it jumps, because of ECX == 0, an empty command-line-string will be used.
@@ -952,17 +951,22 @@ bits 32
 		mov edi, PAYLOADSEG<<4
 		mov ecx, (ukh_payload_end-ukh_payload+3)>>2
 		rep movsd
-
-		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
-		; The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
   %if 1  ; !! What's wrong if we don't bother with NMI?
+  .disable_nmi:
 		mov al, 0x80  ; Disable NMI. !! Why is this needed? https://wiki.osdev.org/Protected_Mode
 		out 0x70, al
   %endif
-  %ifdef UKH_PAYLOAD_16  ; !!! Switch to real mode instead.
-		; !!! The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
-		cli
-		hlt
+
+		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
+		; The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
+  %ifdef UKH_PAYLOAD_16
+    %if PAYLOADSEG>=0x1000
+		mov esp, (0x10000)-4  ; Aligned to 4. We will keep ESP 16-bit only (i.e. we never put anything >=0x10000 to it after the `push esp' above) for simple compatibility with real mode, which uses the low 16 bits (SP) only.
+    %else
+		mov esp, (PAYLOADSEG<<4)-4  ; Aligned to 4.
+    %endif
+		push strict dword (APISEG+0x20)<<16|(setup_sector.setup_common16-setup_sector)  ; Stack set up above.
+		jmp setup_sector.real_mode_jmp32
   %else
 		jmp short setup_common32
   %endif
@@ -1013,7 +1017,7 @@ cpu 8086
 ; lidt instruction. The table entries have to remain valid until the next
 ; lgdt or lidt instruction (i.e. long).
 ;
-; We put this very late in setup_sector, for the size saving in setup_multiboot32.
+; We put this very late in setup_sector, for the size saving in setup_multiboot.
 gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; GDT limit.
 		dd (APISEG<<4)+boot_sector.gdt-boot_sector  ; GDT base.
 
@@ -1029,7 +1033,7 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; GDT limit.
   .multiboot.load_addr: dd OUR_MULTIBOOT_LOAD_ADDR  ; Linear address. ERR_BELOW_1MB for PAYLOADSEG<<4, thus we use OUR_MULTIBOOT_LOAD_ADDR and setup_multiboot.copy_payload instead.
   .multiboot.load_end_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(ukh_payload_end-boot_sector)
   .multiboot.bss_end_addr:  dd OUR_MULTIBOOT_LOAD_ADDR+(ukh_payload_end-boot_sector)  ; No specific .bss to be cleared by the bootloader.
-  .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(setup_multiboot32-boot_sector)
+  .multiboot.entry_addr: dd OUR_MULTIBOOT_LOAD_ADDR+(setup_multiboot-boot_sector)
   .multiboot.end:
   .multiboot.size_check: __ukh_assert_at multiboot+0x20
 %else
