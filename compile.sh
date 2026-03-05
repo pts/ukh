@@ -24,7 +24,9 @@ if ! test -f memtest86+-5.01-dist-nrv.bin; then
 fi
 
 #nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'ubuntu-16.04-grub-0.97-29ubuntu68-stage2'" -DGRUB1 -o grub1.multiboot.bin grub1.nasm
-nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'stage2'" -DGRUB1 -o grub1.multiboot.bin grub1.nasm   # !!!
+nasm-0.98.39 -O0 -w+orphan-labels -f bin -DSTAGE2_IN="'stage2'" -DGRUB1 -o grub1.multiboot.bin grub1.nasm
+nasm-0.98.39 -O999999999 -w+orphan-labels -f bin -DSTAGE2_IN="'stage2'" -DGRUB1 -o grub1.multiboot.opt.bin grub1.nasm
+cmp grub1.multiboot.bin grub1.multiboot.opt.bin
 "$upxbc" --upx=upx.pts --flat32 --lzma --prefix=0x470 -f -o grub1.lzma.badsize.bin grub1.multiboot.bin  # This will boot, but the UKH boot code would memmove(...) unnecessarily many bytes.
 nasm-0.98.39 -O0 -w+orphan-labels -f bin -DUKH_PAYLOAD_32_FILE="'grub1.lzma.badsize.bin'" -DUKH_PAYLOAD_FILE_SKIP=0x400 -DUKH_VERSION_STRING="'grub1-0.97-ubuntu'" -DUKH_MULTIBOOT -o grub1.lzma.bin ukh.nasm
 #"$upxbc" --upx=upx.pts --flat32 --ultra-brute --no-lzma --prefix=0x470 -f -o grub1.nrv.bin grub1.multiboot.bin  # Larger than with --lzma by <900 bytes. Also the memmove(...) is unnecessarily large.
