@@ -222,47 +222,15 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		;EMIT_DATA_SEGMENT_DESCRIPTOR(0xfffff, 0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, read-write, base arbitrary (0xfffff, arbitrary, unused, unusual), limit 0xffff, limit limit granularity 0 (1 byte). upfx_32.nasm has these values.
 .gdt_end:	__ukh_assert_at .gdt+6*8
 .code3:		pop si  ; SI := actual offset of .here.
-		sub si, byte .here-.start  ; SI := actual offset of .start.
 		cld
 		test cx, cx
 		jnz short .not_chain_protocol
-		cmp si, BOOT_ENTRY_ADDR
-		je short .chain_protocol
-.not_chain_protocol:
-		test si, si
-		jnz short .not_protocol_with_offset_zero
-		cmp cx, byte 0x60
-		jne short .not_freedos_protocol
-.freedos_protocol:  ; Used by FreeDOS and SvarDOS.
-		mov dl, bl  ; Save BIOS drive number.
-		mov al, 'F'  ; Indicate FreeDOS.
-		jmp short .any_supported_protocol  ; !! Also receive the FreeDOS (bleeding edge, more reent than the kernel in FreeDOS 1.3) command line.
-.not_freedos_protocol:
-		cmp cx, byte 0x70
-		jne short .not_drdos_protocol
-.drdos_protocol:  ; Used by DR-DOS, EDR-DOS. SvarDOS can also boot from it.
-		mov al, 'D'  ; Indicate DR-DOS.
-		jmp short .any_supported_protocol
-.not_drdos_protocol:
-		cmp cx, 0x2000
-		jne short .not_ntldr_protocol
-.ntldr_protocol:  ; NTLDR, used by Windows NT 3.1--4.0, Windows 2000--XP. Later releases of Windows may use a similar protocol, but the filename is *bootmgr* rather than *ntldr*.
-		mov al, 'N'  ; Indicate Windows NTLDR.
-		jmp short .any_supported_protocol
-.not_ntldr_protocol:
-.not_protocol_with_offset_zero:
-.fatal_unknown_protocol:
-.fatal_print_and_halt:  ; Input: AH == 0xe; AL == character to print.
-		xor bx, bx  ; Set up error message.
-		int 0x10  ; Print character in AL.
-.halt:		ukh_halt
-		; Not reached.
-
-.chain_protocol:  ; Now: CX == 0; DS == 0; SI == 0x7c00 == BOOT_ENTRY_ADDR; DL == BIOS drive number; SS:SP is valid but unknown.
+		cmp si, BOOT_ENTRY_ADDR+(.here-.start)  ; 0x7c00-(...).
+		jne short .not_chain_protocol  ; Jump iff CS:IP was 0:0x7c00. Some BIOSes jump to 0x7c0:0 instead when booting from floppy or HDD, but we don't support those. !! Add support (it doesn't fit).
+.chain_protocol:  ; Now: CX == 0; DS == 0; DL == BIOS drive number; SS:SP is valid but unknown.
 		xor bx, bx  ; Set up error message.
 		mov al, 'b'
 		int 0x10  ; Print character in AL.
-
 		; Compare a few bytes of setup_sector to
 		; .copy_of_setup_sector. This is a best effort check to see
 		; if the bootloader has loaded setup_sector.
@@ -271,14 +239,46 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov si, BOOT_ENTRY_ADDR+.copy_of_setup_sector-.start
 		inc byte [si+2]  ; 'GdrS' --> 'HdrS'.
 		mov di, BOOT_ENTRY_ADDR+setup_sector-.start
-		mov cx, (.copy_of_setup_sector.end-.copy_of_setup_sector)>>1
+		mov cl, (.copy_of_setup_sector.end-.copy_of_setup_sector)>>1  ; CH is already 0.
 		repe cmpsw
 		je short .cmp_matches
-		cmp dl, 16  ; BIOS drive number.
+		cmp dl, 16  ; BIOS drive number must be smaller than this.
 		jb short .booting_from_floppy
 		mov al, 'F'  ; Fail with fatal error: `bF' means that the bootloader has loaded only he first sector.
-		int 0x10
-		jmp short .halt
+		; Fall through to .fatal_print_and_halt.
+		;jmp short .fatal_print_and_halt
+.not_protocol_with_offset_zero_al:
+.not_chain_or_freedos_or_drdos_or_ntldr_protocol_al:
+.fatal_unknown_protocol_al:  ; Not a jump target.
+.fatal_print_and_halt:  ; Input: AH == 0xe; AL == character to print.
+		xor bx, bx  ; Set up error message.
+		int 0x10  ; Print character in AL.
+.halt:		ukh_halt
+		; Not reached.
+.not_chain_protocol:
+		sub si, byte .here-.start  ; SI := actual offset of .start.
+		jnz short .not_protocol_with_offset_zero_al
+		cmp cx, byte 0x60
+		jne short .not_chain_or_freedos_protocol
+.freedos_protocol:  ; Used by FreeDOS and SvarDOS.
+		mov dl, bl  ; Save BIOS drive number.
+		mov al, 'F'  ; Indicate FreeDOS.
+		jmp short .drdos_or_freedos_protocol  ; !! Also receive the FreeDOS (bleeding edge, more reent than the kernel in FreeDOS 1.3) command line.
+.not_chain_or_freedos_protocol:
+		cmp cx, byte 0x70
+		jne short .not_chain_or_freedos_or_drdos_protocol
+.drdos_protocol:  ; Used by DR-DOS, EDR-DOS. SvarDOS can also boot from it.
+		mov al, 'D'  ; Indicate DR-DOS.
+.drdos_or_freedos_protocol:
+		; Typical FreeDOS, EDR-DOS 7.01.08 and SvarDOS >= 20240729 values here: DS == SS == 0x17fe (or 0x27fe if increased); BP == 0x7c00.
+		jmp short .any_supported_protocol
+.not_chain_or_freedos_or_drdos_protocol:
+		cmp cx, 0x2000
+		jne short .not_chain_or_freedos_or_drdos_or_ntldr_protocol_al
+.ntldr_protocol:  ; NTLDR, used by Windows NT 3.1--4.0, Windows 2000--XP. Later releases of Windows may use a similar protocol, but the filename is *bootmgr* rather than *ntldr*.
+		mov al, 'N'  ; Indicate Windows NTLDR.
+		jmp short .any_supported_protocol
+
 .booting_from_floppy:
 		mov al, 'l'
 		db 0xa9  ; Opcode byte of `test ax, strict word ...', to skip over the `mov al, 's'' instruction below.
@@ -289,8 +289,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
   times -1 nop
 %endif
 		mov cx, BOOT_ENTRY_ADDR>>4
-.any_supported_protocol:  ; Now: DS:SI points to the loaded boot_sector+setup_sector; AL is character to print; DL is the BIOS drive number. SS:SP is still populated by the bootloader.
-		xor bx, bx  ; Set up error message. Also set BX to 0 for .adjust_dpt.
+		; Fall through to .any_supported_protocol.
+
+.any_supported_protocol:  ; Now: CX:0 points to the loaded, to-be-copied boot_sector+setup_sector (BXS_SIZE == 0x400 bytes in total); AL == boot mode ('l' for floppy) character to print; DL == BIOS drive number; SS:SP is still populated by the bootloader.
+		xor bx, bx  ; Set up error message. Also set BX to 0 for .load_sectors_from_floppy.
 		int 0x10  ; Print character in AL.
 %if 1  ; !! Remove these debug prints (but some of them indicate progress).
 		xchg al, dl  ; BIOS drive number.
@@ -300,7 +302,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 
 		; Initialize DS := BOOT_ENTRY_ADDR>>4; ES := APISEG; SS:SP.
 		mov ds, cx  ; After this (until we break DS again) global variables work.
-		mov es, [.initseg_const-.start]  ; ES := APISEG.
+		mov es, [.apiseg_const-.start]  ; ES := APISEG.
 		cli
 		push es
 		pop ss  ; SS := APISEG.  ; mov ss, ... .
@@ -315,136 +317,11 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
 		rep movsw
 		jmp APISEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to PAYLOADSEG). Needed for the NTLDR load protocol.
-.initseg_const equ $-2
-.after_far_jmp:  ; Input: CX == 0; BX == 0.
+.apiseg_const equ $-2
+.after_far_jmp:  ; Input: CX == 0; BX == 0; AL == boot mode ('l' for floppy) character to print.
 		cmp al, 'l'
-		;jne short .not_load_from_floppy
-		je short .adjust_dpt
-		jmp near .not_load_from_floppy
-		; Fall through to .adjust_dpt.
-
-.adjust_dpt:  ; Input: CX == 0; BX == 0.
-; The code from here up to .not_load_from_floppy is based on linux-2.4.37.11/arch/i386/boot/bootsect.S .
-		mov ds, bx  ; 0.
-		mov bl, 0x1e<<2  ; BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
-		lds si, [bx]  ; DS:SI := source.
-		mov cl, 14  ; Number of bytes to copy. Some sources say 11, others 12, others 14 bytes. We play it safe, and copy 14 bytes.
-		sub sp, cx
-		mov di, sp
-		push ds  ; Save old DPT far pointer segment. Will be popped by .finish_loading.
-		push si  ; Save old DPT far pointer offset. Will be popped by .finish_loading.
-		push bx  ; Save offset value 0x1e<<2. Will be popped by .finish_loading.
-		push ss
-		pop es
-		rep movsb
-		push cx  ; Save segment value 0. Will be popped by .finish_loading.
-		mov ds, cx  ; 0, because of the `rep movsw' above.
-		mov [bx], sp    ; New DPT far pointer offset.
-		mov [bx+2], ss  ; New DPT far pointer segment.
-		mov cl, 36  ; CH == 0 because of the `rep movsb' above.
-		; The Disk Parameter Table (DPT) in many BIOSes will not allow multi-sector
-		; reads beyond the defafult maximum of just 7 sectors. We change it
-		; temporarily to our maximum of 36 (used by 2880K ED floppies).
-		mov [ss:di-14+4], cl  ; Patch maximum sector count in the new DPT.
-		; Fall through to .detect_sectors_per_track.
-
-.detect_sectors_per_track:  ; Input: CH == 0 (track number); CL == highest sectors-per-track value to try; DL == BIOS drive number; CS == SS == APISEG.
-		; We try these sectors-per-track values: 36, 18, 15, 9. The heads value is always 2. Floppy image sizes: 36: 2880K; 18: 1440K, 15: 1200K, 9: 720K or 360K.
-		; Now: CL == sector number; CH == 0 (track number).
-		mov bx, APISEG+0x20
-		mov es, bx
-		mov dh, 0  ; head := 0.
-		xor bx, bx  ; Offset to read to. ES is the segment.
-.detect_sectors_per_track_again:
-		mov ax, 0x201  ; AH := 2 (Read sectors); AL := 1 (number of sectors to read).
-		int 0x13  ; Read sectors.
-		jnc short .found_sectors_per_track
-		shr cl, 1
-		; Possible values of CL now: 18 (CF == 0), 9 (CF == 0), 7 (CF == 1).
-		jc short .fallback_sectors_per_track
-		; Possible values of CL now: 18 (CF == 0), 9 (CF == 0).
-		cmp cl, 36>>1
-		je short .detect_sectors_per_track_again
-		mov cl, 15
-		jmp short .detect_sectors_per_track_again
-.fallback_sectors_per_track:
-		mov cl, 9
-.found_sectors_per_track:
-%if 0  ; For debugging.
-		mov ah, 0xe
-		mov al, cl
-		xor bx, bx
-		int 0x10
-%endif
-%if 1  ; !!! Why do we have to reset it here? We could save 4 bytes.
-		xor ax, ax  ; AX := 0. Reset FDC.
-		int 0x13  ; Reset FDC. Only works if DL <= 0x7f == 127.
-%endif
-		mov dh, 0  ; Initialize VAR_head := 0.
-		mov ah, cl  ; AH := (detected sectors-per-track).
-		mov cl, 1  ; Initialize VAR_sread := 1.
-		;mov ch, 0  ; Initialize VAR_track := 0. Not needed, CH is already 0.
-		;push cx.  We store VAR_sread  and VAR_track in CX, and not on the stack.
-;%define VAR_head dh  ; Current head. 0 or 1. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in DH.
-;%define VAR_sectors_per_track ah  ; Initialized to the value detected by .detect_sectors_per_track. It won't be changed.
-;%define VARW_sectors_per_track_head ax
-;%define VAR_track ch  ; Current track. At most 255. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in CH.
-;%define VAR_sread cl  ; Number of sectors already read of current track. Initialized to 1, because 1 sector (the boot sector) has already been read. BIOS int 14h AH == 2 (Read sectors) expects the sector index in CL.
-;%define VARW_sread_track cx
-		; Fall through to .load_setup_sector.
-
-.load_setup_sector:
-		mov al, 1  ; Number of setup sectors to load.
-		call .read_sectors  ; Reads AL sectors. Ruins BX := 0, DH.
-		mov bx, PAYLOADSEG  ; The read destination segment.
-		; Now: AL == 1; BX:0 == address to read the first payload sector to; CX == 2.
-		; Fall through to .load_payload_sectors.
-
-; Loads the rest of the sectors, making sure no 64 KiB boundary is crossed,
-; loading whole tracks whenever possible (for fast loading).
-;
-; Input: BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number.
-.load_payload_sectors:
-.set_next:
-		cmp cl, ah  ; AH is VAR_sectors_per_track.
-		jne short .set_next3
-		xor dh, 1  ; Next head. DH is VAR_head.
-		jnz short .set_next4
-		inc ch  ; Next track.
-.set_next4:
-		mov cl, 0  ; CL (VAR_sread) := 0.
-.set_next3:
-		mov es, bx  ; ES := PAYLOADSEG, the read destination segment.
-		mov al, cl
-.next_read_count:
-		inc ax
-		add bx, byte 0x200>>4
-		test bx, 0xfff
-		jz short .done_read_count  ; Stop at 64 KiB boundary.
-		cmp al, ah  ; AH is VAR_sectors_per_track.
-		jne short .next_read_count
-.done_read_count:
-		sub al, cl  ; AL := (number of sectors to read next). It's always positive.
-		call .read_sectors  ; Reads AL sectors. Ruins BX := 0, DH.
-		mov bx, es
-.add_next:
-		add bx, byte 0x200>>4
-		dec al
-		jnz short .add_next
-		cmp bx, strict word PAYLOADSEG+((__missing_ukh_end+ukh_payload_end-ukh_payload+0xf)>>4)
-		jb short .set_next
-		; Fall through to .finish_loading.
-
-.finish_loading:
-		pop es  ; Restore ES := 0.
-		pop di  ; Restore DI := 0x1e<<2. BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
-		pop ax  ; Restore AX := old DPT far pointer offset.
-		pop bx  ; Restore BX := old DPT far pointer segment.
-		stosw  ; Set DPT offset to old.
-		xchg ax, bx  ; Ruins BX.
-		stosw  ; Set DPT segment to old.
-		;lea sp, [di-14]  ; Not needed, we can waste 14 bytes of stack space temporarily.
-		jmp short .jump_to_setup_chain
+		je short .load_sectors_from_floppy
+		; Fall through to .not_load_from_floppy.
 
 .not_load_from_floppy:
 		; Copy ukh_payload_end-ukh_payload bytes (rounded up to
@@ -500,6 +377,133 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor bx, bx
 		jmp (APISEG+0x20):(setup_sector.setup_chain-setup_sector)  ; Self-modifying code: target offset may be changed from .setup_chain to .setup_linux_cont16.
 .jmp_offset2: equ $-4
+.const_apiseg_plus_0x20: equ $-2
+
+.load_sectors_from_floppy:
+.adjust_dpt:  ; Input: CX == 0; BX == 0.
+; The code from here up to .not_load_from_floppy is based on linux-2.4.37.11/arch/i386/boot/bootsect.S .
+		mov ds, bx  ; 0.
+		mov bl, 0x1e<<2  ; BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
+		lds si, [bx]  ; DS:SI := `int 1eh' interrupt vector value.
+		mov cl, 14  ; Number of bytes to copy. Some sources say 11, others 12, others 14 bytes. We play it safe, and copy 14 bytes.
+		sub sp, cx
+		mov di, sp
+		push ds  ; Save old DPT far pointer segment. Will be popped by .finish_loading.
+		push si  ; Save old DPT far pointer offset.  Will be popped by .finish_loading.
+		push bx  ; Save offset value 0x1e<<2. Will be popped by .finish_loading.
+		push ss
+		pop es
+		rep movsb
+		push cx  ; Save segment value 0. Will be popped by .finish_loading.
+		mov ds, cx  ; 0, because of the `rep movsw' above.
+		mov [bx], sp    ; New DPT far pointer offset.
+		mov [bx+2], ss  ; New DPT far pointer segment.
+		mov cl, 36  ; CH == 0 because of the `rep movsb' above.
+		; The Disk Parameter Table (DPT) in many BIOSes will not allow multi-sector
+		; reads beyond the defafult maximum of just 7 sectors. We change it
+		; temporarily to our maximum of 36 (used by 2880K ED floppies).
+		mov [ss:di-14+4], cl  ; Patch maximum sector count to 36 in the new DPT.
+		; Fall through to .detect_sectors_per_track.
+
+.detect_sectors_per_track:  ; Input: CH == 0 (track number); CL == highest sectors-per-track value to try; DL == BIOS drive number; CS == SS == APISEG.
+		; We try these sectors-per-track values: 36, 18, 15, 9. The heads value is always 2. Floppy image sizes: 36: 2880K; 18: 1440K, 15: 1200K, 9: 720K or 360K.
+		; Now: CL == sector number; CH == 0 (track number).
+%if 1  ; Same size, but it doesn't modify BX.
+		mov es, [cs:.const_apiseg_plus_0x20-boot_sector]  ; ES := APISEG+0x20.
+%else
+		mov bx, APISEG+0x20
+		mov es, bx
+%endif
+		mov dh, 0  ; head := 0.
+		xor bx, bx  ; Offset to read to. ES is the segment.
+.detect_sectors_per_track_again:
+		mov ax, 0x201  ; AH := 2 (Read sectors); AL := 1 (number of sectors to read).
+		int 0x13  ; Read sectors.
+		jnc short .found_sectors_per_track
+		shr cl, 1
+		; Possible values of CL now: 18 (CF == 0), 9 (CF == 0), 7 (CF == 1).
+		jc short .fallback_sectors_per_track
+		; Possible values of CL now: 18 (CF == 0), 9 (CF == 0).
+		cmp cl, 36>>1
+		je short .detect_sectors_per_track_again
+		mov cl, 15
+		jmp short .detect_sectors_per_track_again
+.fallback_sectors_per_track:
+		mov cl, 9
+.found_sectors_per_track:
+%if 0  ; For debugging.
+		mov ah, 0xe
+		mov al, cl
+		xor bx, bx
+		int 0x10
+%endif
+%if 1  ; !!! Why do we have to reset it here? We could save 4 bytes.
+		xor ax, ax  ; AX := 0. Reset FDC.
+		int 0x13  ; Reset FDC. Only works if DL <= 0x7f == 127.
+%endif
+		;mov dh, 0  ; Initialize VAR_head := 0. Not needed, DH is already 0.
+		mov ah, cl  ; AH := (detected sectors-per-track).
+		mov cl, 1  ; Initialize VAR_sread := 1.
+		;mov ch, 0  ; Initialize VAR_track := 0. Not needed, CH is already 0.
+;%define VAR_head dh  ; Current head. 0 or 1. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in DH.
+;%define VAR_sectors_per_track ah  ; Initialized to the value detected by .detect_sectors_per_track. It won't be changed.
+;%define VAR_track ch  ; Current track (cylinder). At most 255. Initialized to 0. BIOS int 14h AH == 2 (Read sectors) also expects this in CH.
+;%define VAR_sread cl  ; Number of sectors already read within current track. Initialized to 1, because 1 sector (boot_sector) has already been read. BIOS int 13h AH == 2 (Read sectors) expects the sector index in CL.
+		; Fall through to .load_setup_sector.
+
+.load_setup_sector:  ; Inpput: ES == APISEG+0x20; DL == BIOS drive number; DH == VAR_head; AH == VAR_sectors_per_track; CL == VAR_sread; CH == VAR_track.
+		mov al, 1  ; Number of setup sectors to load.
+		; Now: ES == APISEG+0x20, used by .read_sectors below.
+		call .read_sectors  ; Reads AL sectors. Ruins BX := 0, DH.
+		mov bx, PAYLOADSEG  ; The read destination segment.
+		; Now: AL == 1; BX:0 == address to read the first payload sector to; CX == 2.
+		; Fall through to .load_payload_sectors.
+
+; Loads the rest of the sectors, making sure no 64 KiB boundary is crossed,
+; loading whole tracks whenever possible (for fast loading).
+;
+; Input: BX:0 == address to read the first payload sector to; SS:BP points to our stack frame; DL == BIOS drive number.
+.load_payload_sectors:
+.set_next:
+		cmp cl, ah  ; AH is VAR_sectors_per_track.
+		jne short .set_next3
+		xor dh, 1  ; Next head. DH is VAR_head.
+		jnz short .set_next4
+		inc ch  ; Next track.
+.set_next4:
+		mov cl, 0  ; CL (VAR_sread) := 0.
+.set_next3:
+		mov es, bx  ; ES := PAYLOADSEG, the read destination segment.
+		mov al, cl
+.next_read_count:
+		inc ax
+		add bx, byte 0x200>>4
+		test bx, 0xfff
+		jz short .done_read_count  ; Stop at 64 KiB boundary.
+		cmp al, ah  ; AH is VAR_sectors_per_track.
+		jne short .next_read_count
+.done_read_count:
+		sub al, cl  ; AL := (number of sectors to read next). It's always positive.
+		call .read_sectors  ; Reads AL sectors. Ruins BX := 0, DH.
+		mov bx, es
+.add_next:
+		add bx, byte 0x200>>4
+		dec al
+		jnz short .add_next
+		cmp bx, strict word PAYLOADSEG+((__missing_ukh_end+ukh_payload_end-ukh_payload+0xf)>>4)
+		jb short .set_next
+		; Fall through to .finish_loading.
+
+.finish_loading:
+		pop es  ; Restore ES := 0.
+		pop di  ; Restore DI := 0x1e<<2. BIOS Disk Parameter Table (DPT) far pointer is the `int 1eh' interrupt vector.
+		pop ax  ; Restore AX := old DPT far pointer offset.
+		pop bx  ; Restore BX := old DPT far pointer segment.
+		stosw  ; Set DPT offset to old.
+		xchg ax, bx  ; Ruins BX.
+		stosw  ; Set DPT segment to old.
+		;lea sp, [di-14]  ; Not needed, we can waste 14 bytes of stack space temporarily.
+		jmp near .jump_to_setup_chain
 
 ; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Adds the number of sectors read to CL. Ruins AH, BX := 0, DH.
 .read_sectors:
@@ -511,9 +515,8 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		int 0x10
 		pop ax  ; Restore.
 %endif
-		;
-		;mov cx, VARW_sread_track  ; CL := VAR_sread; CH := VAR_track. It's already set.
-		inc cx  ; CL := sector index.
+		; Now: CL == VAR_sread; CH == VAR_track.
+		inc cx  ; CL := sector index to read.
 		xor bx, bx  ; Read sectors to ES:BX == ES:0.
 		push ax  ; Save for both AH (VAR_sectors_per_track) and AL.
 		mov ah, 2  ; Read sectors.
@@ -630,7 +633,7 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 		__ukh_assert_fofs 0x218
 .ramdisk_image: dd 0  ; initrd load address (set by bootloader). 0 (NULL) if no initrd.
 		__ukh_assert_fofs 0x21c
-.ramdisk_size: dd 0  ; initrd size (set by bootloader). 0 if no initrd.
+.ramdisk_size:	dd 0  ; initrd size (set by bootloader). 0 if no initrd.
 		__ukh_assert_fofs 0x220
 .bootsect_kludge: dd 0  ; (kernel internal) DO NOT USE - for bootsect.S use only.
 		__ukh_assert_fofs 0x224
@@ -1118,6 +1121,10 @@ bits UKH_BITS
     %error ERROR_UKH_PAYLOAD_SEG_CROSSES_64K __UKH_VALUE  ; If we allowed this, then .load_payload_sectors wouldn't be able to load the image, because it would cross the 64 KiB boundary imposed by PC floppy BIOS (also SeaBIOS in QEMU 2.11.1).
     ; !! As a workaround, add a temporary, aligned 0x200-byte buffer.
     db 1/0
+  %endif
+  %if PAYLOADSEG+(((ukh_payload_end-ukh_payload+0x1ff)&~0x1ff)>>4)>APISEG
+    %error ERROR_UKH_PAYLOAD_OVERLAPS_APISEG  ; Workaround: make your kernel payload shorter or decrease UKH_PAYLOAD_SEG.
+    db /10
   %endif
   %if $-boot_sector<0xa01  ; File size must be at least 5 sectors (0xa00 == 2560 bytes in setup sectors) + 1 byte (in payload) for the old Linux load protocol.
     times 0xa01-($-boot_sector) db 0
