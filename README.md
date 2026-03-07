@@ -323,6 +323,13 @@ your kernel payload:
   the command line will have all the arguments of the *kernel* command),
   and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename and a
   space. QEMU 2.11.1 doesn't prepend anything.
+* Get the number of hidden sectors (LBA), also called the partition start
+  offset from `dword [ukh_hidden_sector_count32]`. The value -1 means
+  unknown. Currently it may be known only for the FreeDOS and DR-DOS
+  subprotocols of the chain load protocol. The value can be used to
+  determine from which partition (within the BIOS boot drive) the boot
+  sector boot code has loaded the kernel image image. If unknown, as a
+  fallback, you can use the first active partition as the boot partition.
 
 The UKH API provides to following functionality in real mode to your kernel
 payload:
@@ -361,6 +368,13 @@ payload:
   space (so the command line will have all the arguments of the *kernel*
   command), and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename
   and a space. QEMU 2.11.1 doesn't prepend anything.
+* Get the number of hidden sectors (LBA), also called the partition start
+  offset from `dword [ukh_apiseg16:ukh_hidden_sector_count16]`. The value -1
+  means unknown. Currently it may be known only for the FreeDOS and DR-DOS
+  subprotocols of the chain load protocol. The value can be used to
+  determine from which partition (within the BIOS boot drive) the boot
+  sector boot code has loaded the kernel image image. If unknown, as a
+  fallback, you can use the first active partition as the boot partition.
 
 ## Features
 

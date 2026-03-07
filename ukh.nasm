@@ -271,6 +271,16 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov al, 'D'  ; Indicate DR-DOS.
 .drdos_or_freedos_protocol:
 		; Typical FreeDOS, EDR-DOS 7.01.08 and SvarDOS >= 20240729 values here: DS == SS == 0x17fe (or 0x27fe if increased); BP == 0x7c00.
+		cmp bp, BOOT_ENTRY_ADDR  ; 0x7c00.
+		jne short .any_supported_protocol
+		mov si, ds
+		mov di, ss
+		cmp si, di
+		jne short .any_supported_protocol
+		mov si, [bp+0x1c  ]  ; Low  word of hidden sector count in the loaded BPB of the FAT12, FAT16 or FAT32 filesystem. Uses SS:BP.
+		mov [cs:setup_sector.ramdisk_size-boot_sector  ], si  ; .ramdisk_size corresponds to ukh_hidden_sector_count16.
+		mov si, [bp+0x1c+2]  ; High word of hidden sector count in the loaded BPB of the FAT12, FAT16 or FAT32 filesystem. Uses SS:BP.
+		mov [cs:setup_sector.ramdisk_size-boot_sector+2], si  ; .ramdisk_size corresponds to ukh_hidden_sector_count16.
 		jmp short .any_supported_protocol
 .not_chain_or_freedos_or_drdos_protocol:
 		cmp cx, 0x2000
@@ -508,7 +518,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 ; Reads AL sectors (of 0x200 bytes) to ES:BX. Needs AL >= 1. Sets AL to the actual number of sectors read. Adds the number of sectors read to CL. Ruins AH, BX := 0, DH.
 .read_sectors:
 		; Display the progress dot.
-%if 0  ; !!! It doesn't fit.
+%if 0  ; It doesn't fit, too much code in boot_sector.
 		push ax  ; Save.
 		mov ax, 0xe00+'.'
 		xor bx, bx
@@ -633,7 +643,7 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 		__ukh_assert_fofs 0x218
 .ramdisk_image: dd 0  ; initrd load address (set by bootloader). 0 (NULL) if no initrd.
 		__ukh_assert_fofs 0x21c
-.ramdisk_size:	dd 0  ; initrd size (set by bootloader). 0 if no initrd.
+.ramdisk_size:	dd -1  ; initrd size (set by bootloader). 0 or unchanged if no initrd. UKH doesn't support initrd. UKH uses this number for ukh_hidden_sector_count32 and ukh_hidden_sector_count16 instead.
 		__ukh_assert_fofs 0x220
 .bootsect_kludge: dd 0  ; (kernel internal) DO NOT USE - for bootsect.S use only.
 		__ukh_assert_fofs 0x224
@@ -923,7 +933,7 @@ bits 32
 
 		jz short .boot_drive_done
 		mov al, [ebx+3*4+3]  ; Boot drive number in multiboot_info.boot_device.
-		mov [esi+boot_sector.drive_number-boot_sector], al  ; Save BIOD drive number to its final UKH boot protocol location.
+		mov [esi+boot_sector.drive_number-boot_sector], al  ; Save BIOS drive number to its final UKH boot protocol location.
   .boot_drive_done:
   .copy_2_sectors:
 		; Copy the first 2 sectors to APISEG.
@@ -1053,6 +1063,7 @@ ukh_drive_number32         equ 0x90026  ; Example usage: `mov dl, [ukh_drive_mum
 ukh_real_mode32            equ 0x90232  ; Most users should use macro ukh_protected_mode instead. As `call ...', this only works with `org (PAYLOADSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org.
 ukh_real_mode_jmp32        equ 0x90242  ; Most users should use macro ukh_protected_mode instead. Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242. It works with any org.
 ukh_kernel_cmdline_ptr32   equ 0x90022  ; Kernel command-line string as a NUL-terminated byte string starting at linear address dword [ukh_kernel_cmdline_ptr32]. It works with any org.
+ukh_hidden_sector_count32  equ 0x9021c  ; Number of sectors (LBA) on the boot drive (byte [ukh_drive_number32]) before the boot partition for the FreeDOS and DR-DOS load protocols (-1 if unknown or for the other load protocols). Also called the partition start offset.
 ; See macro ukh_real_mode below.
 ; See macro ukh_halt defined above.
 
@@ -1063,6 +1074,7 @@ ukh_drive_number16         equ    0x26  ; Example usage: `mov ax, ukh_apiseg16' 
 ukh_a20_gate_al16          equ   0x24d  ; Most users should use macro ukh_a20_gate_al instead. In real mode, `call ukh_apiseg16:ukh_a20_gate_al16'. It works with any org.
 ukh_protected_mode16       equ   0x230  ; Most users should use macro ukh_protected_mode instead. In real mode, `call ukh_apiseg16:ukh_protected_mode16'. It works with any org.
 ukh_kernel_cmdline_ptr16   equ    0x22  ; Kernel command-line string as a NUL-terminated byte string starting at ukh_apiseg16:(word [ukh_apiseg:ukh_kernel_cmdline_ptr16]). It works with any org.
+ukh_hidden_sector_count16  equ   0x21c  ; Number of sectors (LBA) on the boot drive (byte [ukh_drive_number32]) before the boot partition for the FreeDOS and DR-DOS load protocols (-1 if unknown or for the other load protocols). Also called the partition start offset.
 ; See macro ukh_protected_mode below.
 ; See macro ukh_a20_gate_al below.
 ; See macro ukh_halt defined above.
