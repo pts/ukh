@@ -388,6 +388,32 @@ payload:
   Currently it may be known only for the Multiboot load protocol. Use
   ukh_hidden_sector_count16 instead, if available.
 
+## Figuring out the boot partition
+
+Since space is restricted within the 1024-byte UKH header, the logic to
+figure out the boot partition (also called as the root filesystem) is not
+implemented there. Here is how you can and should implement it in your
+kernel payload:
+
+1. If ukh_drive_number32 (or ukh_drive_numbr16) is not known, then fail.
+2. If the BIOS boot drive number in ukh_drive_number32 (or
+   ukh_drive_numbr16) is less than 0x80, then use the entire floppy device
+   (and stop this algorithm).
+3. Otherwise, if ukh_hidden_sector_count32 (or ukh_hidden_sector_count16) is
+   known (which may happen for the FreeDOS and DR-DOS subprotocols of the
+   chain load protocol), then use it as the partition start offset. Read the
+   MBR sector from cylinder 0, head 0, sector 1. Iterate over the 4 primary
+   partition entries within the MBR, compare the dword at byte offset 8
+   against the the hidden sector count above. Pick the first which matches.
+   If there is no match, fail.
+4. Otherwise, if ukh_partition32 (or ukh_partition16) is known (which may
+   happen for the Multiboot load protocol), then use it as a 0-based
+   partition index. Fail for index values larger than 3. Read the MBR sector
+   from cylinder 0, head 0, sector 1. Pick the partition entry with the
+   index above.
+5. Otherwise, as a fallback, read the MBR sector from cylinder 0, head 0,
+   sector 1. Pick the first active primary partition.
+
 ## Features
 
 The Universal Kernel Header (UKH) supports multiple load protocols:
