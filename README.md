@@ -9,7 +9,7 @@ sector. UKH provides an API for switching between modes (32-bit protected
 mode and 16-bit real mode), receiving the kernel command-line string, and
 receiving the BIOS boot drive number. UKH supports specifying a version
 string (displayed by the *file* command and GRUB). UKH can compress the
-kernel payload with LZMA or LZSS. UKH adds an 1024-byte header header to the
+kernel payload with LZMA or LZSS. UKH adds an 1024-byte header to the
 kernel payload code written by the kernel programmer. UKH is suitable for
 beginners kernel developers: they can start writing their kernel code in a
 combination of 32-bit protected mode and (16-bit) real mode, without even
@@ -558,20 +558,23 @@ passing a kernel command-line string to the FreeDOS kernel (kernel.sys).
 
 ## TODOs
 
-* Add load protocol: DOS MZ .exe, just to report that this is a kernel file which cannot be executed in DOS.
-* Add load protocol: bootable CD.
+TODOs:
+
 * Copy the kernel command line to linear address 0x903e0. That's the smallest, because earlier bytes are used by the .protected_mode_far and .real_mode library functions.
-* Compress the 32-bit payload with `upxbc --flat32`. This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work.
+* Add --ukh format support (an extension of --flat32, and later --flat16) to upfx. This will be tricky, because the payload size is everywhere.
+* Compress the 32-bit payload with `upfx.pl --flat32`. This will also make the kernel shorter than 134.5 KiB, and original FreeDOS, SvarDOS and EDR-DOS boot sectors will work.
 * Make the 4 setup sectors shorter, *rep movsd* code and data around. We have to keep .setup_sects == 4, for compatibility with the Linux kernel old protocol.
 * Add progress indicator to the LZMA decompressor.
-* Add support for 16-bit payload.
-* Add support for multiboot with 16-bit payload. Switch back to real mode.
-* Add `upxbc --flat16x` and `apack1p -1 -x` compressor for the 16-bit payload. Make this compression without a prefix.
+* Add `upxbc --flat16x` and `apack1p -1 -x` compressor for the 16-bit kernel payload. Make this compression without a prefix.
 * Apply some Ubuntu bugfix patches to the memtest86+-5.01-dist.bin binary.
 * Instead of halting, wait for keypress and reboot.
 * See how much better memtest86+-5.01.bin compresses (uncompressed size is about 32 KiB larger).
 * Simplfy jumps in upxbc --flat32 decompress and lxunfilter functions.
-* Add GRUB 1 0.97-29ubuntu68 as an UKH image.
 * Add SYSLINUX 4.07 as an UKH image.
 * Add a modified Liigboot as an UKH image.
-* Add --ukh format support (an extension of --flat32, and later --flat16) to upxbc. This will be tricky, because the payload size is everywhere.
+* Add an explicit declaration for 8086, 186 and 286 CPU compatibility.
+
+These features are unlikely to be implemented:
+
+* Add load protocol: DOS MZ .exe, just to report that this is a kernel file which cannot be executed in DOS.
+* Add load protocol: bootable CD.
