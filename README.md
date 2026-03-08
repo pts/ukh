@@ -388,6 +388,26 @@ payload:
   Currently it may be known only for the Multiboot load protocol. Use
   ukh_hidden_sector_count16 instead, if available.
 
+File identification programs should detect an UKH kernel image by checking
+that the file size is at least 0xa01 == 2561 bytes, and then comparing the
+first 0x34 == 52 bytes of the file to: 0x8c 0xc9 0xb8 0x3f 0x0e 0xe8 0x28
+0x00 0xff 0xff 0x00 0x00 0x00 0x9a 0xcf 0x00 0xff 0xff 0x00 0x00 0x00 0x92
+0xcf 0x00 0xff 0xff 0x00 0x00 0x09 0x9b 0x00 0x00 0x3f 0xa3 0x25 0x00 0x09
+0x00 0xfe 0xff 0xff 0xff 0x00 0x00 0x00 0x93 0x00 0x00 0x5e 0xfc 0x85 0xc9.
+
+File identification programs can extract the version string from an UKH
+kernel image the same way as they extract it from a Linux kernel image: get
+ofs as a 16-bit unsigned, little-endian integer at file offset 0x210. Then
+use the NUL-terminated (ASCII) string at file offset 0x200+ofs as the
+version string.
+
+File identification programs can detect a 32-bit kernel payload
+(UKH_PAYLOAD_32) by comparing the 2 bytes at file offset 0x226 to 0xcd 0x10.
+Please note that both 16-bit and 32-bit kernel payloads can contain a
+mixture of 32-bit protected-mode code and 16-bit real-mode code, so the
+distinction is not very meaningful from the user's perspective. There is no
+easy way to detect the minimum CPU required by a UKH kernel image.
+
 ## Figuring out the boot partition
 
 Since space is restricted within the 1024-byte UKH header, the logic to
