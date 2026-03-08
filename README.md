@@ -541,6 +541,21 @@ See [this forum
 thread](https://sourceforge.net/p/freedos/mailman/message/37871507/) about
 passing a kernel command-line string to the FreeDOS kernel (kernel.sys).
 
+## Similar projects
+
+* The [GRUB4DOS](https://github.com/grub4dos) boot manager is an extension
+  of GRUB 1 0.97 with many features, incling booting of many kernel image
+  formats; and also the ability to start the boot manager in various
+  environments (including DOS, Windows NT boot menu, boot sectors of various
+  filesystems).
+* The [lDebug](https://pushbx.org/ecm/doc/ldebug.htm#cmdboot) debugger can
+  run in bootloader mode. It supports booting of many kernel image formats
+  (mostly DOS variants).
+* The [lDOS boot](https://pushbx.org/ecm/doc/ldosboot.htm) components (such
+  as *iniload* and *fdkernpl*) can be combined to a kernel image which can
+  be booted by multiple bootloaders (such as the MS-DOS boot sector boot
+  code and the FreeDOS boot sector boot code).
+
 ## TODOs
 
 * Add load protocol: DOS MZ .exe, just to report that this is a kernel file which cannot be executed in DOS.
