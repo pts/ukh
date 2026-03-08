@@ -324,12 +324,18 @@ your kernel payload:
   and SYSLINUX 4.07 prepends `BOOT_IMAGE=`, the kernel filename and a
   space. QEMU 2.11.1 doesn't prepend anything.
 * Get the number of hidden sectors (LBA), also called the partition start
-  offset from `dword [ukh_hidden_sector_count32]`. The value -1 means
-  unknown. Currently it may be known only for the FreeDOS and DR-DOS
-  subprotocols of the chain load protocol. The value can be used to
-  determine from which partition (within the BIOS boot drive) the boot
+  offset from `dword [ukh_hidden_sector_count32]`. The value -1 ==
+  0xffffffff means unknown. Currently it may be known only for the FreeDOS
+  and DR-DOS subprotocols of the chain load protocol. The value can be used
+  to determine from which partition (within the BIOS boot drive) the boot
   sector boot code has loaded the kernel image image. If unknown, as a
-  fallback, you can use the first active partition as the boot partition.
+  fallback, you can use ukh_partition32, and if that's also unknown, use the
+  first active partition as the boot partition.
+* Get the boot partition number from `byte [ukh_partition32]`.
+  The first primary partition has number 0. The value -2 == 0xfe means
+  unknown, and the value -1 == 0xff means that the entire device is used.
+  Currently it may be known only for the Multiboot load protocol. Use
+  ukh_hidden_sector_count32 instead, if available.
 
 The UKH API provides to following functionality in real mode to your kernel
 payload:
@@ -370,11 +376,17 @@ payload:
   and a space. QEMU 2.11.1 doesn't prepend anything.
 * Get the number of hidden sectors (LBA), also called the partition start
   offset from `dword [ukh_apiseg16:ukh_hidden_sector_count16]`. The value -1
-  means unknown. Currently it may be known only for the FreeDOS and DR-DOS
-  subprotocols of the chain load protocol. The value can be used to
-  determine from which partition (within the BIOS boot drive) the boot
-  sector boot code has loaded the kernel image image. If unknown, as a
-  fallback, you can use the first active partition as the boot partition.
+  == 0xffffffff means unknown. Currently it may be known only for the
+  FreeDOS and DR-DOS subprotocols of the chain load protocol. The value can
+  be used to determine from which partition (within the BIOS boot drive) the
+  boot sector boot code has loaded the kernel image image. If unknown, as a
+  fallback, you can use ukh_partition16, and if that's also unknown, use the
+  first active partition as the boot partition.
+* Get the boot partition number from `byte [ukh_apiseg16:ukh_partition16]`.
+  The first primary partition has number 0. The value -2 == 0xfe means
+  unknown, and the value -1 == 0xff means that the entire device is used.
+  Currently it may be known only for the Multiboot load protocol. Use
+  ukh_hidden_sector_count16 instead, if available.
 
 ## Features
 

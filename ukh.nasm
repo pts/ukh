@@ -213,8 +213,8 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .cl_magic:	dw 0xa33f  ; equ .start+0x20  ; (dw) 0xa33f (LINUX_CL_MAGIC) The Linux bootloader will set this to the same value (LINUX_CL_MAGIC == 0xa33f) if it provides a kernel command-line string.
 .cl_offset:	dw .cl_offset_high_word+1-.start  ; equ .start+0x22  ; (dw) The Linux bootloader (also in kernel load protocol <=2.01) will set this to (dw) the offset of the kernel command line. The segment is APISEG. By default it points to a NUL byte, so the kernel command-line string is empty.
 .cl_offset_high_word: dw APISEG>>12  ; equ .start+0x24  ; (dw) 9. So that dword [0x90022] can be used as a pointer to the kernel command line. Also has its high byte 0, used by the default .cl_offset.
-.drive_number:  db 0xff  ; byte [0x90026]. Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
-.unused_partition: db 0xff  ; byte [0x90027]. Default value of 0xff indicates unknown. It is always unknown so far.
+.partition: db 0xfe  ; byte [0x90026]. Partition within the BIOS boot drive, or 0xff if the entire drive should be used. Default value of 0xfe indicates unknown. Currently only the Multiboot load protocol sets it to non-unknown (but not always).
+.drive_number:  db 0xff  ; byte [0x90027]. BIOS boot drive number (first floppy is 0, first HDD is 0x80). Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 		__ukh_assert_at .gdt+5*8
 ..@BACK16_DS: equ $-.gdt  ; Segment ..@BACK16_DS == 0x28 descriptor. Used for switching back to real mode. Its flags will be reused when back in real mode. Won't actually be used to reference memory while switching.
 		EMIT_DATA_SEGMENT_DESCRIPTOR(0,        0xffff, 1, 1, 0, 0, 1, 0, 0, 0)  ; dw 0xffff, 0, 0x9300, 0  ; 16-bit, data, base 0. pts-grub1-port stage2/asm.S also has these values. This is the initial contents of the shadow descriptor in DS, ES, FS, GS, SS in QEMU 2.11.1 boot sector load time.
@@ -323,7 +323,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		xor si, si
 		xor di, di
 		; Good: SYSLINUX 4.07 *boot*, GRUB4DOS *chainloader*, GRUB *kernel* with Multiboot only and the DOS boot sectors pass the BIOS drive number (e.g. 0x80 for first HDD) in DL. (Or in BL, but we've already copied it to DL.)
-		mov [si+.drive_number-.start], dl  ; Save BIOS drive number to its final UKH boot protocol location.
+		mov [si+.drive_number-.start], dl  ; Save BIOS drive number to the UKH final boot_sector.drive_number.
 		mov cx, BXS_SIZE>>1  ; Number of words to copy (even number of bytes).
 		rep movsw
 		jmp APISEG:.after_far_jmp-.start  ; Jump to .after_far_jmp in the copy, to avoid overwriting the code doing the copy below (to PAYLOADSEG). Needed for the NTLDR load protocol.
@@ -619,7 +619,7 @@ cpu 8086
 .boot_flag:	dw BOOT_SIGNATURE  ; (read) 0xaa55 magic number.
 		__ukh_assert_fofs 0x200
 
-setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux boot protocools.
+setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Loaded to 0x800 bytes to 0x90200. Jumped to `jmp 0x9020:0' in real mode for the Linux load protocol.
 .start:		__ukh_assert_fofs 0x200
 .jump:		jmp short .setup_linux  ; (read) Jump instruction. Linux load protocol entry point, in real mode.
 		__ukh_assert_fofs 0x202
@@ -654,7 +654,7 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 %ifndef UKH_PAYLOAD_16  ; !!! Use this space better, for chain only. For Linux, QEMU would overwrite it.
 .setup_chain:
 bits 16
-		int 0x10  ; Print character in AL.
+		int 0x10  ; Print character in AL. File identification programs can use this instruction (bytes 0xcd 0x10) to detect a 32-bit kernel payload.
 		add word [cs:.jmp_offset-setup_sector], byte setup_chain32-setup_linux32  ; Self-modifying code: change the protected mode entry point from setup_linux32 to setup_chain32.
 		jmp short .setup_linux_and_chain
 %endif
@@ -706,6 +706,7 @@ bits 16
 %ifdef UKH_PAYLOAD_16
   .setup_linux16:  ; There is some random working stack set up by the Linux bootloader. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
   cpu 386
+		; !! Populate boot_sector.drive_number and boot_sector.partition based on data received from a patched SYSLINUX 4.07 in *linux* mode. (No need to patch GRUB 1, it uses Multiboot by default.)
 		cli
 		cld
 		push strict word APISEG
@@ -765,6 +766,7 @@ bits 16
 		xor bx, bx
 		int 0x10  ; Print character in AL.
   %endif
+		; !! Populate boot_sector.drive_number and boot_sector.partition based on data received from a patched SYSLINUX 4.07 in *linux* mode. (No need to patch GRUB 1, it uses Multiboot by default.)
   .setup_linux_and_chain:  ; EAX, EBX, ECX, EDX, ESI, EDI, EBP, SS:ESP, DS, ES, FS, GS, most of EFLAGS are uninitialized.
 		cli  ; No interrupts allowed. The Linux bootloader usually provides a valid stack, but we don't rely on it.
 		cld
@@ -930,10 +932,9 @@ bits 32
 		;xchg ebp, eax  ; EBP := multiboot signature; EAX := junk.
 		mov esi, OUR_MULTIBOOT_LOAD_ADDR
 		test byte [ebx], MULTIBOOT_INFO_BOOTDEV	 ; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
-
 		jz short .boot_drive_done
-		mov al, [ebx+3*4+3]  ; Boot drive number in multiboot_info.boot_device.
-		mov [esi+boot_sector.drive_number-boot_sector], al  ; Save BIOS drive number to its final UKH boot protocol location.
+		mov eax, [ebx+3*4+2]  ; part1|drive<<8|any1<<16|any2<<32 in multiboot_info.boot_device.
+		mov [esi+boot_sector.partition-boot_sector], ax  ; Save part1 to boot_sector.partition and drive to the UKH final boot_sector.drive_number.
   .boot_drive_done:
   .copy_2_sectors:
 		; Copy the first 2 sectors to APISEG.
@@ -1059,22 +1060,24 @@ gdtr:		dw boot_sector.gdt_end-boot_sector.gdt-1  ; GDT limit.
 ; --- The UKH API.
 
 ; UKH API available in 32-bit protected mode.
-ukh_drive_number32         equ 0x90026  ; Example usage: `mov dl, [ukh_drive_mumber_flat]'. It works with any org.
+ukh_partition32            equ 0x90026  ; Example usage: `mov al, [ukh_partition32]'.    It works with any org. Partition within the BIOS boot drive, or 0xff if the entire drive should be used. Default value of 0xfe indicates unknown. The first primary partition has number 0. Currently it may only be known for the Multiboot load protocol.
+ukh_drive_number32         equ 0x90027  ; Example usage: `mov dl, [ukh_drive_mumber32]'. It works with any org. BIOS boot drive number (first floppy is 0, first HDD is 0x80). Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 ukh_real_mode32            equ 0x90232  ; Most users should use macro ukh_protected_mode instead. As `call ...', this only works with `org (PAYLOADSEG<<4)-BXS_SIZE'. As `push ... ++ ret', it works with any org.
 ukh_real_mode_jmp32        equ 0x90242  ; Most users should use macro ukh_protected_mode instead. Don't `call ...', but push return segment:offset, and jump here from 32-bit protected mode at 0x90242. It works with any org.
 ukh_kernel_cmdline_ptr32   equ 0x90022  ; Kernel command-line string as a NUL-terminated byte string starting at linear address dword [ukh_kernel_cmdline_ptr32]. It works with any org.
-ukh_hidden_sector_count32  equ 0x9021c  ; Number of sectors (LBA) on the boot drive (byte [ukh_drive_number32]) before the boot partition for the FreeDOS and DR-DOS load protocols (-1 if unknown or for the other load protocols). Also called the partition start offset.
+ukh_hidden_sector_count32  equ 0x9021c  ; Number of sectors (LBA) on the BIOS boot drive (byte [ukh_drive_number32]) before the boot partition for the FreeDOS and DR-DOS load protocols (-1 if unknown or for the other load protocols). Also called the partition start offset.
 ; See macro ukh_real_mode below.
 ; See macro ukh_halt defined above.
 
 ; UKH API available in real mode.
 ukh_apiseg16               equ APISEG
 ;ukh_base16                equ -(PAYLOADSEG<<4)  ; Defined above. This is for real-mode code in the payload .nasm source. Example: `mov si, message+ukh_base16'. If (UKH_PAYLOAD_SEG&0xfff)==0 (default), then it can be omitted: `mov si, message'.
-ukh_drive_number16         equ    0x26  ; Example usage: `mov ax, ukh_apiseg16' ++ `mov ds, ax' ++ mov dl, [ukh_drive_mumber16]'. It works with any org.
+ukh_partition16            equ    0x26  ; Example usage if DS == ukh_apiseg16: `mov al, [ukh_partition16]'.    It works with any org. Partition within the BIOS boot drive, or 0xff if the entire drive should be used. Default value of 0xfe indicates unknown. The first primary partition has number 0. Currently it may only be known for the Multiboot load protocol.
+ukh_drive_number16         equ    0x27  ; Example usage if DS == ukh_apiseg16: `mov dl, [ukh_drive_mumber16]'. It works with any org. BIOS boot drive number (first floppy is 0, first HDD is 0x80). Default value of 0xff indicates unknown, and it remains this way for the Linux load protocol and for the Multiboot load protocol via QEMU.
 ukh_a20_gate_al16          equ   0x24d  ; Most users should use macro ukh_a20_gate_al instead. In real mode, `call ukh_apiseg16:ukh_a20_gate_al16'. It works with any org.
 ukh_protected_mode16       equ   0x230  ; Most users should use macro ukh_protected_mode instead. In real mode, `call ukh_apiseg16:ukh_protected_mode16'. It works with any org.
 ukh_kernel_cmdline_ptr16   equ    0x22  ; Kernel command-line string as a NUL-terminated byte string starting at ukh_apiseg16:(word [ukh_apiseg:ukh_kernel_cmdline_ptr16]). It works with any org.
-ukh_hidden_sector_count16  equ   0x21c  ; Number of sectors (LBA) on the boot drive (byte [ukh_drive_number32]) before the boot partition for the FreeDOS and DR-DOS load protocols (-1 if unknown or for the other load protocols). Also called the partition start offset.
+ukh_hidden_sector_count16  equ   0x21c  ; Number of sectors (LBA) on the BIOS boot drive (byte [ukh_apiseg16:ukh_drive_number16]) before the boot partition for the FreeDOS and DR-DOS load protocols (-1 if unknown or for the other load protocols). Also called the partition start offset. It works with any org.
 ; See macro ukh_protected_mode below.
 ; See macro ukh_a20_gate_al below.
 ; See macro ukh_halt defined above.
