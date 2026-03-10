@@ -342,17 +342,19 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov bx, (ukh_payload_end-ukh_payload+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		; Fall through to .copy_payload.
 
+; Copies BX sectors from CX:0 to AX:0. BX must not be 0. Then jumps to
+; setup_sector.setup_chain.
+;
+; Sets BX := 0; CX := 0; SI := 0x200; DI := 0x200; DX := either 0x20 or
+; -0x20 == 0xffe0. Makes AX == ES. Ruins AX, DS, ES. Keeps BP, SS:SP.
+;
+; It doesn't use the stack. setup_sector.setup_linux16 depends on this
+; restriction.
+;
+; We copy one sector (0x200) bytes at a time. This is arbitrary. But we
+; can't copy in one go, because the data size is >=64 KiB, so we have to
+; modify some segment registers.
 .copy_payload:
-		; Copy BX sectors from CX:0 to AX:0. BX must not be 0. Then
-		; jump to setup_sector.setup_chain.
-		;
-		; Sets BX := 0; CX := 0; SI := 0x200; DI := 0x200; DX :=
-		; either 0x20 or -0x20 == 0xffe0. Makes AX == ES. Ruins AX,
-		; DS, ES. Keeps BP, SS:SP.
-		;
-		; We copy one sector (0x200) bytes at a time. This is
-		; arbitrary. But we can't copy in one go, because the data
-		; size is >=64 KiB, so we have to modify some segment registers.
 		mov dx, 0x200>>4  ; Number of paragraphs per sector.
 		; Now: CX == copy source segment; AX == copy destination segment.
 		cmp cx, ax
@@ -374,7 +376,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 .copy_sector:	mov cx, 0x200>>1  ; Number of words in a sector.
 		xor si, si
 		xor di, di
-		rep movsw
+		rep movsw  ; Also sets CX := 0.
 		mov ax, ds
 		add ax, dx  ; [+-] (0x200>>4)
 		mov ds, ax
@@ -711,10 +713,10 @@ bits 16
   .setup_linux16:  ; There is some random working stack set up by the Linux bootloader. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
   cpu 386
 		; !! Populate boot_sector.drive_number and boot_sector.partition based on data received from a patched SYSLINUX 4.07 in *linux* mode. (No need to patch GRUB 1, it uses Multiboot by default.)
-		cli
+		cli  ; This is to avoid corrupting memory when an interrupt occurs. SS:SP can point anywhere now.
 		cld
 		push strict word APISEG
-		pop ds
+		pop ds  ; It's OK to use the stack before our first memory copy.
 		add word [boot_sector.jmp_offset2-boot_sector], byte .setup_linux_cont16-.setup_chain  ; Self-modifying code.
 		mov ax, PAYLOADSEG+((0xa00-BXS_SIZE)>>4)  ; Copy destination segment.
 		mov cx, LINUXKERNELSEG  ; Copy source segment.
@@ -730,7 +732,7 @@ bits 16
 		db 0xa9  ; Opcode byte of `test ax, strict word ...', to skip over the `int 0x10' instruction below.
 		; Fall thrugh to .setup_chain.
 
-  .setup_chain:  ; Linux and chain load protocols both reach this. We assume that already DF=0 (cld), and that there is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
+  .setup_chain:  ; Linux and chain load protocols both reach this. DS and ES are uninitialized. We don't require CX == 0. We require: DF == 0 (cld); there is some random working stack; CS == 0x9020 == (APISEG<<4)+0x20.
   cpu 8086
 		int 0x10  ; Print character in AL.
   %if $-.setup_chain!=2
@@ -739,8 +741,13 @@ bits 16
   %endif
 		; Fall through to .setup_common16.
 
-  .setup_common16:  ; Setup registers and jump to the kernel payload. Linux, chain and Multiboot load protocols all end here. We assume that already DF=0 (cld), and that there is some randowm working stack. CS == 0x9020 == (APISEG<<4)+0x20. DS and ES are uninitialized.
-		xor cx, cx
+  .setup_common16:  ; Setup registers and jump to the kernel payload. Linux, chain and Multiboot load protocols all end here. DS and ES are uninitialized. We don't require CX == 0. We require: DF == 0 (cld); there is some random working stack; CS == 0x9020 == (APISEG<<4)+0x20.
+		; Here is how CX has got its current value.
+		; * With load protocol Linux, we are coming from .setup_linux16, and its `rep movsw' has set CX := 0.
+		; * With load protocol floppy, we are coming from .setup_chain from boot_sector.jump_to_setup_chain from boot_sector.finish_loading, and CX is arbitrary.
+		; * With load protocol chain, we are coming from .setup_chain from boot_sector.jump_to_setup_chain from boot_sector.copy_sectors, and its `rep movsw' has set CX := 0.
+		; * With load protocol Multiboot, we are coming from .jump_to_common16 from .copy_payload, and its 32-bit protected-mode `rep movsd' has set CX := 0 and ECX := 0.
+		xor cx, cx  ; Needed for load protocol floppy.
 		cli  ; To avoid race condition in setting SS and SP on a buggy 8086 CPU.
 		mov ss, cx
   %if PAYLOADSEG>=0x1000
@@ -973,17 +980,18 @@ bits 32
     %endif
   %endif
 		mov ecx, (ukh_payload_end-ukh_payload+3)>>2
-		rep movsd
+		rep movsd  ; Also sets ECX := 0.
   %if 1  ; !! What's wrong if we don't bother with NMI?
   .disable_nmi:
 		mov al, 0x80  ; Disable NMI. !! Why is this needed? https://wiki.osdev.org/Protected_Mode
 		out 0x70, al
   %endif
 
-		; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
+		; Now: ECX == 0; EBX is still set to the address of the multiboot_info struct set up by the bootloader. https://www.gnu.org/software/grub/manual/multiboot/multiboot.html#Boot-information-format
 		; The Multiboot v1 specification allows any (nonworking) value in SS:ESP now.
   %ifdef UKH_PAYLOAD_16
-		push strict dword (APISEG+0x20)<<16|(setup_sector.setup_common16-setup_sector)  ; Stack set up above.
+  .jump_to_common16:
+		push strict dword (APISEG+0x20)<<16|(setup_sector.setup_common16-setup_sector)  ; Stack set up above. Will jump to setup_sector.setup_common16 in real mode.
 		jmp setup_sector.real_mode_jmp32
   %else
 		jmp short setup_common32
