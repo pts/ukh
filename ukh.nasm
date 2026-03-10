@@ -346,6 +346,10 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		; Copy BX sectors from CX:0 to AX:0. BX must not be 0. Then
 		; jump to setup_sector.setup_chain.
 		;
+		; Sets BX := 0; CX := 0; SI := 0x200; DI := 0x200; DX :=
+		; either 0x20 or -0x20 == 0xffe0. Makes AX == ES. Ruins AX,
+		; DS, ES. Keeps BP, SS:SP.
+		;
 		; We copy one sector (0x200) bytes at a time. This is
 		; arbitrary. But we can't copy in one go, because the data
 		; size is >=64 KiB, so we have to modify some segment registers.
@@ -379,7 +383,7 @@ boot_sector:  ; 1 sector of 0x200 bytes.
 		mov es, ax
 		dec bx
 		jnz short .copy_sector
-		; Now: CX == 0.
+		; Now: BX == 0; CX == 0; SI == 0x200; DI == 0x200; DX == either 0x20 or -0x20 == 0xffe0; AX == ES; AX, DS and ES are ruined.
 		; Fall through to .jump_to_setup_chain.
 
 .jump_to_setup_chain:
@@ -713,16 +717,16 @@ bits 16
 		pop ds
 		add word [boot_sector.jmp_offset2-boot_sector], byte .setup_linux_cont16-.setup_chain  ; Self-modifying code.
 		mov ax, PAYLOADSEG+((0xa00-BXS_SIZE)>>4)  ; Copy destination segment.
-		mov cx, PAYLOADSEG  ; Copy source segment.
+		mov cx, PAYLOADSEG  ; Copy source segment. !!! BUG: This should be LINUXKERNELSGEG here, and PAYLOADSEG in .setup_linux_cont16.
 		push cx  ; Save.
 		mov bx, (__payload_padded_end-ukh_payload-(0xa00-BXS_SIZE)+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
-		jmp APISEG:(boot_sector.copy_payload-boot_sector)  ; When done, it will jump to .setup_linux_cont16, as modified above.
+		jmp APISEG:(boot_sector.copy_payload-boot_sector)  ; Sets BX := 0 (in boot_sector.jump_to_setup_chan); CX := 0; SI := 0x200; DI := 0x200. Ruins AX (in boot_sector.jump_to_setup_chan), DX, DS, ES. When done, it will jump to .setup_linux_cont16, as modified above.
   .setup_linux_cont16:
 		push cs
 		pop ds  ; DS := APISEG+0x20.
 		pop es  ; Restore ES := PAYLOADSEG.
 		mov si, BXS_SIZE-0x200
-		xor di, di
+		xor di, di  ; !!! Reuse the 0x200 value.
 		mov ch, (0xa00-BXS_SIZE)>>1>>8  ; mov cx, (0xa00-BXS_SIZE)>>1  ; CL is already 0, as set by boot_sector.copy_payload.
 		rep movsw
 		db 0xa9  ; Opcode byte of `test ax, strict word ...', to skip over the `int 0x10' instruction below.
