@@ -721,14 +721,12 @@ bits 16
 		mov bx, (__payload_padded_end-ukh_payload-(0xa00-BXS_SIZE)+0x1ff)>>9  ; Number of 0x200-byte sectors to copy. Positive.
 		jmp APISEG:(boot_sector.copy_payload-boot_sector)  ; Sets BX := 0 (in boot_sector.jump_to_setup_chan); CX := 0; SI := 0x200; DI := 0x200. Ruins AX (in boot_sector.jump_to_setup_chan), DX, DS, ES. When done, it will jump to .setup_linux_cont16, as modified above.
   .setup_linux_cont16:
-		push cs
-		pop ds  ; DS := APISEG+0x20.
-		mov si, PAYLOADSEG
+		mov si, PAYLOADSEG-0x20  ; If this underflows, then ERROR_UKH_PAYLOAD_SEG_TOO_SMALL fires.
 		mov es, si  ; ES := PAYLOADSEG.
 		mov si, BXS_SIZE-0x200
-		xor di, di  ; !!! Reuse the 0x200 value.
+		;mov di, 0x200  ; Not needed, boot_sector.copy_payload has already set DI to 0x200.
 		mov ch, (0xa00-BXS_SIZE)>>1>>8  ; mov cx, (0xa00-BXS_SIZE)>>1  ; CL is already 0, as set by boot_sector.copy_payload.
-		rep movsw
+		cs rep movsw  ; Copies CX<<1 bytes from CS:SI to ES:DI. Also sets CX := 0. CS is already APISEG+0x20.
 		db 0xa9  ; Opcode byte of `test ax, strict word ...', to skip over the `int 0x10' instruction below.
 		; Fall thrugh to .setup_chain.
 
