@@ -1141,6 +1141,10 @@ bits UKH_BITS
 
 %macro ukh_end 0
   ukh_payload_end:
+  %if PAYLOADSEG!=(UKH_PAYLOAD_SEG)
+    %error ERROR_UKH_PAYLOAD_SEG_HAS_CHANGED
+    db 1/0
+  %endif
   %if (PAYLOADSEG&0x1f) && ((PAYLOADSEG+0x20)&~0xfff)!=((PAYLOADSEG+((ukh_payload_end-ukh_payload+BXS_SIZE+0x1ff)>>4))&~0xfff)
     %assign __UKH_VALUE PAYLOADSEG
     %error ERROR_UKH_PAYLOAD_SEG_CROSSES_64K __UKH_VALUE  ; If we allowed this, then .load_payload_sectors wouldn't be able to load the image, because it would cross the 64 KiB boundary imposed by PC floppy BIOS (also SeaBIOS in QEMU 2.11.1).
