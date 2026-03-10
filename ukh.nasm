@@ -647,9 +647,9 @@ setup_sector:  ; 4 == (.boot_sector.setup_sects) sectors of 0x200 bytes each. Lo
 		__ukh_assert_fofs 0x214
 .code32_start:	dd 0  ; (modify, optional reloc) Bootloader hook. Unused.
 		__ukh_assert_fofs 0x218
-.ramdisk_image: dd 0  ; initrd load address (set by bootloader). 0 (NULL) if no initrd.
+.ramdisk_image: dd 0  ; initrd load address (set by bootloader). 0 (NULL) if no initrd. SYSLINUX 4.07 core/kernel.inc has this as su_ramdiskat.
 		__ukh_assert_fofs 0x21c
-.ramdisk_size:	dd -1  ; initrd size (set by bootloader). 0 or unchanged if no initrd. UKH doesn't support initrd. UKH uses this number for ukh_hidden_sector_count32 and ukh_hidden_sector_count16 instead.
+.ramdisk_size:	dd -1  ; initrd size (set by bootloader). 0 or unchanged if no initrd. UKH doesn't support initrd. UKH uses this number for ukh_hidden_sector_count32 and ukh_hidden_sector_count16 instead. SYSLINUX 4.07 core/kernel.inc has this as su_ramdisklen.
 		__ukh_assert_fofs 0x220
 .bootsect_kludge: dd 0  ; (kernel internal) DO NOT USE - for bootsect.S use only.
 		__ukh_assert_fofs 0x224
